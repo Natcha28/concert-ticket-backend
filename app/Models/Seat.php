@@ -1,0 +1,13 @@
+<?php
+namespace App\Models;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class Seat extends Model {
+    use HasFactory;
+    protected $table = 'seats';
+    protected $primaryKey = 'Seat_id';
+
+    // ✅ เพิ่มตรงนี้ครับ
+    protected $fillable = ['Seat_id', 'Zone_id', 'SeatRow', 'SeatNo', 'SeatStatus'];
+}
