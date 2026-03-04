@@ -14,6 +14,8 @@ use App\Http\Controllers\BookingController;
 use App\Http\Controllers\PaymentController;
 use App\Http\Controllers\OrganizerPaymentController;
 use App\Http\Controllers\AdminEventController;
+use App\Http\Controllers\SeatController; 
+use App\Http\Controllers\OrderController;
 
 /*
 |--------------------------------------------------------------------------
@@ -31,48 +33,64 @@ Route::post('/login', [AuthController::class, 'login']);
 Route::post('/organizer/login', [OrganizerAuthController::class, 'login']);
 Route::post('/organizer/register', [OrganizerAuthController::class, 'register']);
 
-// --- Public View (จัดกลุ่มให้ตรงกับ Frontend) ---
+// --- Public View ---
 Route::prefix('public')->group(function () {
-    Route::get('/events', [EventController::class, 'getPublicEvents']);   // สำหรับหน้าแรก
-    Route::get('/events/{id}', [EventController::class, 'show']);         // ✅ สำหรับหน้ารายละเอียด (ต้องมีคำว่า public นำหน้า)
+    Route::get('/events', [EventController::class, 'getPublicEvents']);
+    Route::get('/events/{id}', [EventController::class, 'show']);
 });
 
+Route::get('/seats', [SeatController::class, 'getSeats']);
+Route::get('/public/events', [EventController::class, 'getPublicEvents']);
+
+// API สำหรับจัดการการชำระเงิน (จำลองว่าธนาคารยิงมา ไม่ต้องล็อกอิน)
+Route::post('/payment/success/{bookingId}', [BookingController::class, 'confirmPayment']);
+Route::post('/payment/cancel/{bookingId}', [BookingController::class, 'cancelPayment']);
+
+// API สำหรับให้หน้า E-Ticket ดึงข้อมูลไปโชว์ (เปิดเป็น Public เผื่อเจ้าหน้าที่สแกน)
+Route::get('/tickets/{bookingId}', [BookingController::class, 'getTickets']);
+
 // ====================================================
-// 2. PROTECTED ROUTES (ต้องมี Token เท่านั้น)
+// 2. PROTECTED ROUTES (ต้องมี Token ล็อกอินเท่านั้น)
 // ====================================================
 Route::group(['middleware' => ['auth:sanctum']], function () {
 
-    // --- User Info ---
-    Route::post('/logout', [AuthController::class, 'logout']);
     Route::get('/user', function (Request $request) {
         return $request->user();
     });
 
+    // --- Authentication ---
+    Route::post('/logout', [AuthController::class, 'logout']); 
+
+    
     // --- Member (คนซื้อบัตร) ---
+    Route::get('/profile', [App\Http\Controllers\ProfileController::class, 'getProfile']);
+    Route::put('/profile', [App\Http\Controllers\ProfileController::class, 'updateProfile']);
+    Route::put('/profile/password', [App\Http\Controllers\ProfileController::class, 'updatePassword']);
     Route::post('/bookings', [BookingController::class, 'store']);
     Route::post('/payments', [PaymentController::class, 'store']);
     Route::get('/my-tickets', [BookingController::class, 'index']);
-
-    // --- Organizer (ผู้จัดงาน) ---
-    // 🔴 [สำคัญ] ส่วนจัดการ Events 🔴
     
-    // ✅ เพิ่มบรรทัดนี้ เพื่อให้ Frontend เรียก GET /api/events ได้ (แก้ปัญหา Method Not Allowed)
+    // ⭐️ API สำหรับหน้าประวัติการสั่งซื้อ (ย้าย orders/{id} ลงมาไว้ที่นี่ครับ) ⭐️
+    Route::get('/orders', [OrderController::class, 'index']);
+    Route::get('/orders/{id}', [OrderController::class, 'show']);
+    
+    // --- Organizer (ผู้จัดงาน) ---
     Route::get('/events', [EventController::class, 'index']); 
-
     Route::get('/events/{id}', [EventController::class, 'show']);
     Route::put('/events/{id}', [EventController::class, 'update']);
     Route::delete('/events/{id}', [EventController::class, 'destroy']); 
-    
-    Route::post('/events', [EventController::class, 'store']);           // สร้างงานใหม่
-    Route::get('/my-events', [EventController::class, 'index']);         // ดูงานของฉัน (Dashboard)
-    
+    Route::post('/events', [EventController::class, 'store']);
+    Route::get('/my-events', [EventController::class, 'index']);
     Route::post('/event-times', [EventDateTimeController::class, 'store']); 
     Route::post('/ticket-zones', [TicketZoneController::class, 'store']);   
-    
     Route::post('/organizer/pay-deposit', [OrganizerPaymentController::class, 'payDeposit']);
     Route::get('/organizer/attendees', [OrganizerAuthController::class, 'getAttendees']);
     Route::get('/organizer/profile', [OrganizerAuthController::class, 'getProfile']);
     Route::post('/organizer/profile', [OrganizerAuthController::class, 'updateProfile']);
+    Route::middleware('auth:sanctum')->get('/organizer/attendees', [EventController::class, 'getAttendees']);
+    Route::get('/organizer/sales', [EventController::class, 'getSalesAnalytics']);
+    Route::get('/organizer/dashboard', [EventController::class, 'getDashboardData']);
+    Route::get('/organizer/events/{id}', [EventController::class, 'show']);
 
     // --- Admin ---
     Route::get('/admin/pending-events', [AdminEventController::class, 'getPendingEvents']);

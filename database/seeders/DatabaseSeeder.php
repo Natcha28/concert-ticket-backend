@@ -27,18 +27,30 @@ class DatabaseSeeder extends Seeder
         ]);
 
         // 2. สร้างสถานที่ (Hall)
-        $hall = Hall::updateOrCreate(['Hall_Name' => 'Impact Arena (Large)'], [
-            'Address' => 'Nonthaburi', 'totalCapacity' => 12000
-        ]);
+        $hall1 = Hall::updateOrCreate(
+            ['Hall_id' => 1],
+            ['Hall_Name' => 'IMPACT Arena', 'Address' => 'Nonthaburi', 'totalCapacity' => 12000]
+        );
+        
+        $hall2 = Hall::updateOrCreate(
+            ['Hall_id' => 2],
+            ['Hall_Name' => 'Prince Mahidol Hall', 'Address' => 'Nakhon Pathom', 'totalCapacity' => 2000]
+        );
 
-        // 3. สร้างโซนพื้นที่ในฮอลล์ (HallZone)
+        $hall3 = Hall::updateOrCreate(
+            ['Hall_id' => 3],
+            // ✅ ใช้ชื่อที่สั้นลงเพื่อไม่ให้เกิน 50 ตัวอักษรตามที่ DB กำหนด
+            ['Hall_Name' => 'เมืองไทยรัชดาลัย (Rachadalai Theatre)', 'Address' => 'Bangkok', 'totalCapacity' => 1524]
+        );
+
+        // 3. สร้างโซนพื้นที่ในฮอลล์ (HallZone) - ✅ แก้เป็น $hall1
         DB::table('hall_zones')->updateOrInsert(
-            ['Hall_id' => $hall->Hall_id, 'zoneName' => 'VIP1'],
+            ['Hall_id' => $hall1->Hall_id, 'zoneName' => 'VIP1'],
             ['zoneCapacity' => 500]
         );
-        $hzId = DB::table('hall_zones')->where('zoneName', 'VIP1')->value('HallZone_id');
+        $hzId = DB::table('hall_zones')->where('zoneName', 'VIP1')->where('Hall_id', $hall1->Hall_id)->value('HallZone_id');
 
-        // 4. ✨ [จุดที่แก้ไข] สร้างสมาชิก (Member) และกำหนดลงตัวแปร $member
+        // 4. สร้างสมาชิก (Member)
         $member = User::updateOrCreate(['emailMB' => 'admin@test.com'], [
             'firstnameMB' => 'Mossy', 
             'lastnameMB' => 'Admin', 
@@ -48,10 +60,14 @@ class DatabaseSeeder extends Seeder
             'statusMB' => 'ใช้งานได้'
         ]);
 
-        // 5. สร้างอีเวนต์ (Event)
+        // 5. สร้างอีเวนต์ (Event) - ✅ แก้เป็น $hall1
         $event = Event::updateOrCreate(['eventName' => 'GMM Grammy RS: Hit 90s Concert'], [
-            'Org_id' => $org->Org_id, 'Hall_id' => $hall->Hall_id, 'eventStatus' => 'กำลังจะจัด',
-            'MaxTicketsPerMember' => 4, 'rental_start' => Carbon::now()->addDays(10), 'rental_end' => Carbon::now()->addDays(14)
+            'Org_id' => $org->Org_id, 
+            'Hall_id' => $hall1->Hall_id, 
+            'eventStatus' => 'กำลังจะจัด',
+            'MaxTicketsPerMember' => 4, 
+            'rental_start' => Carbon::now()->addDays(10), 
+            'rental_end' => Carbon::now()->addDays(14)
         ]);
 
         // 6. สร้างรอบการแสดง (EventDateTime)
@@ -65,35 +81,36 @@ class DatabaseSeeder extends Seeder
             'HallZone_id' => $hzId, 'priceperTick' => 5000, 'totalSeat' => 100, 'remainSeat' => 99, 'colorZone' => '#FFD700'
         ]);
 
-        // 8. สร้างที่นั่ง (Seats) - อ้างอิงตามรูป image_61a05c.png
-        $seatId = DB::table('seats')->insertGetId([
+        // 8. สร้างที่นั่ง (Seats)
+        $seatData = [
             'Zone_id'    => $zone->Zone_id,
             'SeatRow'    => 'A',
             'SeatNo'     => '1',
+        ];
+        
+        DB::table('seats')->updateOrInsert($seatData, [
             'SeatStatus' => 'จองแล้ว',
             'created_at' => now(),
             'updated_at' => now()
-        ], 'Seat_id');
-
-        // 9. สร้างการจอง (Booking) - ใช้ตัวแปร $member จากข้อ 4
-        $booking = Booking::create([
-            'Mem_id'      => $member->Mem_id, 
-            'Datetime_id' => $edt->Datetime_id, 
-            'Zone_id'     => $zone->Zone_id,
-            'BKDate'      => now(), 
-            'quantity'    => 1, 
-            'totalPrice'  => 5000, 
-            'BKStatus'    => 'ชำระเงินแล้ว'
         ]);
+        
+        $actualSeatId = DB::table('seats')->where($seatData)->value('Seat_id');
 
-        // 10. สร้างรายละเอียดตั๋ว (BookingDetail) - อ้างอิงตามรูป image_60b7bb.png
-        BookingDetail::create([
-            'Booking_id'       => $booking->Booking_id,
-            'Seat_id'          => $seatId,
-            'QRCode'           => 'BP-' . strtoupper(Str::random(10)),
-            'issueDate'        => now(),
-            'Price_Per_Ticket' => 5000,
-            'ETStatus'         => 'ใช้งานได้'
-        ]);
+        // 9. สร้างการจอง (Booking)
+        $booking = Booking::updateOrCreate(
+            ['Mem_id' => $member->Mem_id, 'Datetime_id' => $edt->Datetime_id, 'Zone_id' => $zone->Zone_id],
+            ['BKDate' => now(), 'quantity' => 1, 'totalPrice' => 5000, 'BKStatus' => 'ชำระเงินแล้ว']
+        );
+
+        // 10. สร้างรายละเอียดตั๋ว (BookingDetail)
+        BookingDetail::updateOrCreate(
+            ['Booking_id' => $booking->Booking_id, 'Seat_id' => $actualSeatId],
+            [
+                'QRCode' => 'BP-' . strtoupper(Str::random(10)),
+                'issueDate' => now(),
+                'Price_Per_Ticket' => 5000,
+                'ETStatus' => 'ใช้งานได้'
+            ]
+        );
     }
 }

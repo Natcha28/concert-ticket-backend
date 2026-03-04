@@ -7,6 +7,7 @@ use App\Models\Event;
 use App\Models\EventDateTime;
 use App\Models\TicketZone;
 use App\Models\HallZone;
+use App\Models\Seat;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
@@ -15,15 +16,15 @@ use Carbon\Carbon;
 
 class EventController extends Controller
 {
-    // ----------------------------------------------------------------
-    // 1. GET ALL: ดึงข้อมูลงานคอนเสิร์ตทั้งหมด
-    // ----------------------------------------------------------------
+    // =================================================================
+    // 1. หน้า "อีเวนต์ของฉัน" (My Events) - โชว์รายการงานทั้งหมดของผู้จัด
+    // =================================================================
     public function index()
     {
-       $orgId = auth()->id(); 
-
-        $events = Event::with(['hall', 'ticket_zones']) 
+        $orgId = auth()->id() ?? 4; // ใส่ fallback เป็น 4 เผื่อกรณีทดสอบแล้ว token หลุด
+        $events = Event::with(['hall', 'ticket_zones', 'event_date_times']) 
                         ->where('Org_id', $orgId)
+                        ->where('eventStatus', '!=', 'เสร็จสิ้น')
                         ->orderBy('created_at', 'desc')
                         ->get();
 
@@ -31,14 +32,10 @@ class EventController extends Controller
             $totalSeats = $event->ticket_zones->sum('totalSeat');
             $remainSeats = $event->ticket_zones->sum('remainSeat');
             $soldSeats = $totalSeats - $remainSeats;
-
+            
             $imageUrl = null;
             if ($event->bannerImage) {
-                if (str_starts_with($event->bannerImage, 'http')) {
-                    $imageUrl = $event->bannerImage;
-                } else {
-                    $imageUrl = asset('storage/' . $event->bannerImage);
-                }
+                $imageUrl = str_starts_with($event->bannerImage, 'http') ? $event->bannerImage : asset('storage/' . $event->bannerImage);
             }
 
             return [
@@ -52,127 +49,109 @@ class EventController extends Controller
                 'image'    => $imageUrl
             ];
         });
-
         return response()->json($events);
     }
 
-    // ----------------------------------------------------------------
-    // 2. GET ONE: ดูรายละเอียดงานรายตัว
-    // ----------------------------------------------------------------
+    // =================================================================
+    // 2. หน้า "ดูรายละเอียดงาน" (Event Detail) - โชว์ข้อมูลงานรายตัว
+    // =================================================================
     public function show($id)
     {
         $event = Event::with(['hall', 'event_date_times', 'ticket_zones']) 
               ->where('Event_id', $id)
               ->first();
         
-       if (!$event) {
-        return response()->json(['message' => 'Not Found'], 404);
-        }
-
+        if (!$event) { return response()->json(['message' => 'Not Found'], 404); }
         return response()->json($event);
     }
 
-    // ----------------------------------------------------------------
-    // 3. POST: สร้างงานใหม่ และ เช็คคิวฮอลล์ชน
-    // ----------------------------------------------------------------
+    // =================================================================
+    // 3. ฟังก์ชัน "สร้างอีเวนต์ใหม่" (Create Event) + สร้างที่นั่งอัตโนมัติ
+    // =================================================================
     public function store(Request $request)
     {
         DB::beginTransaction(); 
-
         try {
             $rounds = collect($request->show_rounds);
-            
             if ($rounds->isEmpty()) {
                 return response()->json(['message' => 'กรุณาระบุรอบการแสดงอย่างน้อย 1 รอบ'], 400);
             }
 
             $firstShowDate = Carbon::parse($rounds->min('startDT'));
             $lastShowDate  = Carbon::parse($rounds->max('endDT'));
-
             $rentalStart = $firstShowDate->copy()->subDays(2)->startOfDay(); 
             $rentalEnd   = $lastShowDate->copy()->addDays(2)->endOfDay();
 
-            $approvedEvents = Event::with('event_date_times')
-                ->where('Hall_id', $request->Hall_id)
-                ->whereIn('eventStatus', ['กำลังจะจัด', 'กำลังจัดแสดง'])
-                ->get();
-
-            $conflictEvent = null;
-            $conflictDT = null;
-
-            foreach ($approvedEvents as $existingEvent) {
-                foreach ($existingEvent->event_date_times as $dt) {
-                    $existingSetup = Carbon::parse($dt->startDT)->subDays(2)->startOfDay();
-                    $existingTeardown = Carbon::parse($dt->endDT)->addDays(2)->endOfDay();
-
-                    if ($rentalStart <= $existingTeardown && $rentalEnd >= $existingSetup) {
-                        $conflictEvent = $existingEvent;
-                        $conflictDT = $dt;
-                        break 2;
-                    }
-                }
-            }
-
-            if ($conflictEvent && $conflictDT) {
-                $bookedUntil = Carbon::parse($conflictDT->endDT)->addDays(2);
-                return response()->json([
-                    'success' => false,
-                    'code' => 'VENUE_UNAVAILABLE',
-                    'lastBookedDate' => $bookedUntil->toDateTimeString(), 
-                    'message' => '❌ ไม่สามารถจองได้: คิวฮอลล์ทับซ้อนกับงาน "' . $conflictEvent->eventName . '" (รวมเวลาเซ็ตอัปและรื้อถอน)'
-                ], 409);
-            }
-
+            // 1. สร้าง Event
             $event = new Event();
             $event->Org_id = auth()->id() ?? 4; 
             $event->Hall_id = $request->Hall_id;
             $event->eventName = $request->eventName;
             
-            $gridDataJson = json_encode([
-                'venue_size' => $request->venueSize,
-                'stage_grid' => isset($request->stageGrid) ? json_decode($request->stageGrid) : []
-            ]);
+            $gridDataJson = json_encode(['venue_size' => $request->venueSize, 'stage_grid' => $request->stageGrid ?? []]);
             $event->eventDescription = $request->eventDescription . "||GRID_DATA||" . $gridDataJson;
-            $event->bannerImage = $request->posterImage;
+            $event->bannerImage = str_starts_with($request->posterImage, 'data:image') ? $this->saveBase64Image($request->posterImage, 'events') : $request->posterImage;
             $event->MaxTicketsPerMember = 4;
             $event->eventStatus = 'กำลังเตรียม'; 
             $event->rental_start = $rentalStart;
             $event->rental_end   = $rentalEnd;
             $event->save();
 
+            // 2. สร้างรอบการแสดง
             foreach ($request->show_rounds as $round) {
-                $dt = new EventDateTime();
-                $dt->Event_id = $event->Event_id;
-                $dt->roundNumber = $round['roundNumber'];
-                $dt->startDT = $round['startDT'];
-                $dt->endDT   = $round['endDT'];
-                $dt->Sale_startDT = $round['saleStart'];
-                $dt->Sale_endDT   = $round['saleEnd'] ?? null;
-                $dt->save();
+                EventDateTime::create([
+                    'Event_id' => $event->Event_id,
+                    'roundNumber' => $round['roundNumber'],
+                    'startDT' => $round['startDT'],
+                    'endDT' => $round['endDT'],
+                    'Sale_startDT' => $round['saleStart'],
+                    'Sale_endDT' => $round['saleEnd'] ?? null
+                ]);
             }
 
+            // 3. สร้างโซนและที่นั่ง
             if ($request->has('tickets')) {
                 foreach ($request->tickets as $index => $t) {
                     $hallZone = HallZone::create([
-                        'Hall_id'      => $request->Hall_id,
-                        'zoneName'     => $t['zoneName'] ?? 'Zone ' . ($index + 1),
+                        'Hall_id' => $request->Hall_id,
+                        'zoneName' => $t['zoneName'] ?? 'Zone ' . ($index + 1),
                         'zoneCapacity' => $t['quantity'] ?? 0
                     ]);
 
-                    $ticketZone = new TicketZone();
-                    $ticketZone->Event_id = $event->Event_id;
-                    $ticketZone->HallZone_id = $hallZone->HallZone_id;
-                    $ticketZone->zoneName = $t['zoneName'];
-                    $ticketZone->colorZone = '#FFFFFF'; 
-                    $ticketZone->priceperTick = $t['price'];
-                    $ticketZone->totalSeat = $t['quantity'];
-                    $ticketZone->remainSeat = $t['quantity'];
-                    $ticketZone->save();
+                    $ticketZone = TicketZone::create([
+                        'Event_id' => $event->Event_id,
+                        'HallZone_id' => $hallZone->HallZone_id,
+                        'zoneName' => $t['zoneName'],
+                        'colorZone' => '#FFFFFF',
+                        'priceperTick' => $t['price'],
+                        'totalSeat' => $t['quantity'],
+                        'remainSeat' => $t['quantity']
+                    ]);
+
+                    // วนลูปสร้างที่นั่ง
+                    $maxSeatsPerRow = 20; 
+                    $currentQuantity = 0;
+                    $rowIdx = 0;
+                    $rowLetters = range('A', 'Z');
+
+                    while ($currentQuantity < $t['quantity']) {
+                        $rowLetter = $rowLetters[$rowIdx] ?? 'Z' . $rowIdx;
+                        for ($seatNum = 1; $seatNum <= $maxSeatsPerRow && $currentQuantity < $t['quantity']; $seatNum++) {
+                            Seat::create([
+                                'Zone_id' => $ticketZone->Zone_id,
+                                'SeatRow' => $rowLetter,
+                                'SeatNo' => str_pad($seatNum, 2, '0', STR_PAD_LEFT),
+                                'SeatStatus' => 'ว่าง'
+                            ]);
+                            $currentQuantity++;
+                        }
+                        $rowIdx++;
+                    }
                 }
             }
 
             DB::commit(); 
-            return response()->json(['message' => 'บันทึกสำเร็จ', 'event_id' => $event->Event_id], 201);
+            return response()->json(['message' => 'บันทึกสำเร็จและสร้างที่นั่งเรียบร้อย', 'event_id' => $event->Event_id], 201);
 
         } catch (\Exception $e) {
             DB::rollBack(); 
@@ -180,211 +159,187 @@ class EventController extends Controller
         }
     }
 
-    // ----------------------------------------------------------------
-    // ฟังก์ชันช่วยแปลง Base64 เป็นไฟล์รูปภาพ
-    // ----------------------------------------------------------------
+    // =================================================================
+    // 4. หน้า "รายชื่อผู้เข้าร่วม" (Customers / Attendees) 
+    // =================================================================
+    public function getAttendees(Request $request)
+    {
+        $orgId = auth()->id() ?? 4; 
+        try {
+            $attendees = DB::table('bookings')
+                ->join('members', 'bookings.Mem_id', '=', 'members.Mem_id') 
+                ->join('event_date_times', 'bookings.Datetime_id', '=', 'event_date_times.Datetime_id')
+                ->join('events', 'event_date_times.Event_id', '=', 'events.Event_id')
+                ->join('ticket_zones', 'bookings.Zone_id', '=', 'ticket_zones.Zone_id')
+                ->where('events.Org_id', $orgId)
+                ->select(
+                    'bookings.Booking_id as id',
+                    'members.firstnameMB as firstname', 
+                    'members.lastnameMB as lastname',
+                    'members.emailMB as email',
+                    'ticket_zones.zoneName as ticket',
+                    'events.eventName as eventName',
+                    'bookings.BKStatus as status' 
+                )
+                ->orderBy('bookings.created_at', 'desc')
+                ->get();
+
+            // แปลงสถานะให้ตรงกับที่ React คาดหวัง
+            $attendees = $attendees->map(function ($item) {
+                if ($item->status === 'ชำระเงินแล้ว') {
+                    $item->status = 'paid';
+                } else {
+                    $item->status = 'pending';
+                }
+                return $item;
+            });
+
+            return response()->json($attendees, 200);
+
+        } catch (\Exception $e) {
+            return response()->json(['message' => $e->getMessage()], 500);
+        }
+    }
+
+    // =================================================================
+    // 5. หน้า "สรุปยอดขาย" (Sales Analytics)
+    // =================================================================
+    public function getSalesAnalytics(Request $request)
+    {
+        $orgId = auth()->id() ?? 4;
+        try {
+            $bookings = DB::table('bookings')
+                ->join('members', 'bookings.Mem_id', '=', 'members.Mem_id')
+                ->join('event_date_times', 'bookings.Datetime_id', '=', 'event_date_times.Datetime_id')
+                ->join('events', 'event_date_times.Event_id', '=', 'events.Event_id')
+                ->where('events.Org_id', $orgId)
+                ->select(
+                    'bookings.Booking_id as id',
+                    'members.firstnameMB as firstname',
+                    'members.lastnameMB as lastname',
+                    'events.eventName as event',
+                    'bookings.totalPrice as amount',
+                    'bookings.created_at as date',
+                    'bookings.BKStatus as status'
+                )
+                ->orderBy('bookings.created_at', 'desc')
+                ->get();
+
+            $today = Carbon::today();
+            $thisMonth = Carbon::now()->startOfMonth();
+            $successful = $bookings->where('status', 'ชำระเงินแล้ว');
+
+            // จัดรูปแบบรายการสั่งซื้อ 10 รายการล่าสุด
+            $formattedTransactions = $bookings->take(10)->map(function($item) {
+                return [
+                    'id' => 'ORD-' . str_pad($item->id, 3, '0', STR_PAD_LEFT),
+                    'customer' => $item->firstname . ' ' . $item->lastname,
+                    'event' => $item->event,
+                    'amount' => number_format($item->amount, 0),
+                    'date' => date('d/m/Y', strtotime($item->date)),
+                    'status' => ($item->status === 'ชำระเงินแล้ว') ? 'สำเร็จ' : 'รอตรวจสอบ'
+                ];
+            });
+
+            return response()->json([
+                'stats' => [
+                    'revenueToday' => number_format($successful->filter(fn($b) => Carbon::parse($b->date)->isSameDay($today))->sum('amount'), 0),
+                    'revenueMonth' => number_format($successful->filter(fn($b) => Carbon::parse($b->date)->greaterThanOrEqualTo($thisMonth))->sum('amount'), 0),
+                    'totalBills' => $successful->count(),
+                    'avgPerDay' => number_format($successful->count() > 0 ? $successful->sum('amount') / 30 : 0, 0)
+                ],
+                'transactions' => $formattedTransactions->values()
+            ], 200);
+
+        } catch (\Exception $e) {
+            return response()->json(['message' => $e->getMessage()], 500);
+        }
+    }
+
+    // =================================================================
+    // 6. หน้า "แดชบอร์ดหลัก" (Dashboard Panel)
+    // =================================================================
+    public function getDashboardData(Request $request)
+    {
+        $orgId = auth()->id() ?? 4;
+        try {
+            $events = Event::with('ticket_zones')->where('Org_id', $orgId)->orderBy('created_at', 'desc')->get();
+            
+            $successfulBookings = DB::table('bookings')
+                ->join('event_date_times', 'bookings.Datetime_id', '=', 'event_date_times.Datetime_id')
+                ->join('events', 'event_date_times.Event_id', '=', 'events.Event_id')
+                ->where('events.Org_id', $orgId)
+                ->where('bookings.BKStatus', 'ชำระเงินแล้ว');
+
+            $totalSales = $successfulBookings->sum('totalPrice');
+            $ticketsSold = $successfulBookings->sum('quantity');
+            $totalCapacity = $events->flatMap->ticket_zones->sum('totalSeat');
+
+            $formattedEvents = $events->map(function($e) {
+                $sold = $e->ticket_zones->sum('totalSeat') - $e->ticket_zones->sum('remainSeat');
+                $total = $e->ticket_zones->sum('totalSeat');
+                return [
+                    'id' => $e->Event_id,
+                    'name' => $e->eventName,
+                    'date' => $e->rental_start ? date('d/m/Y', strtotime($e->rental_start)) : 'ไม่ระบุ',
+                    'status' => $e->eventStatus,
+                    'progress' => $total > 0 ? round(($sold / $total) * 100) : 0
+                ];
+            });
+
+            return response()->json([
+                'stats' => [
+                    'totalSales' => number_format($totalSales, 0),
+                    'ticketsSold' => number_format($ticketsSold, 0),
+                    'ticketProgressText' => $totalCapacity > 0 ? round(($ticketsSold / $totalCapacity) * 100) . "% of total" : "0% of total",
+                    'activeEvents' => $events->whereIn('eventStatus', ['เปิดขายบัตร', 'กำลังเตรียม', 'On Sale', 'กำลังจะจัด'])->count(),
+                ],
+                'events' => $formattedEvents
+            ], 200);
+
+        } catch (\Exception $e) {
+            return response()->json(['message' => $e->getMessage()], 500);
+        }
+    }
+
+    // =================================================================
+    // Helper Function: เซฟรูปภาพ Base64
+    // =================================================================
     private function saveBase64Image($base64String, $folder)
     {
         if (preg_match('/^data:image\/(\w+);base64,/', $base64String, $type)) {
             $base64String = substr($base64String, strpos($base64String, ',') + 1);
             $type = strtolower($type[1]); 
-
             if (!in_array($type, [ 'jpg', 'jpeg', 'gif', 'png' ])) { return null; }
             $base64String = base64_decode($base64String);
-            if ($base64String === false) { return null; }
-
             $fileName = Str::random(10) . '.' . $type;
             $filePath = $folder . '/' . $fileName;
             Storage::disk('public')->put($filePath, $base64String);
-
             return $filePath;
         }
         return null;
     }
-
-    // ----------------------------------------------------------------
-    // ฟังก์ชันดึงงานทั้งหมดมาโชว์หน้าเว็บ (สำหรับคนทั่วไป)
-    // ----------------------------------------------------------------
-    public function getPublicEvents()
+    // =================================================================
+    // 7. หน้า "หน้าแรกของเว็บ" (Public Homepage) - โชว์งานทั้งหมดให้ลูกค้าดู
+    // =================================================================
+    public function getPublicEvents(Request $request)
     {
-        $allowedStatuses = ['On Sale', 'Selling', 'กำลังจะจัด', 'เปิดขายบัตร'];
-        $events = Event::with(['hall', 'ticket_zones'])
-            ->whereIn('eventStatus', $allowedStatuses)
-            ->orderBy('created_at', 'desc')
-            ->get();
-
-        return response()->json($events);
+        try {
+            // ดึงเฉพาะงานที่มีสถานะอนุญาตให้คนทั่วไปเห็นได้
+            $allowedStatuses = ['On Sale', 'Selling', 'กำลังจะจัด', 'เปิดขายบัตร', 'UPCOMING', 'กำลังเตรียม', 'บัตรขายหมด'];
+            
+            $query = Event::with(['hall', 'event_date_times', 'ticket_zones'])
+                          ->whereIn('eventStatus', $allowedStatuses);
+            
+            // ถ้าระบบมีการพิมพ์ค้นหาชื่อคอนเสิร์ต
+            if ($request->has('search')) { 
+                $query->where('eventName', 'like', '%' . $request->search . '%'); 
+            }
+            
+            return response()->json($query->orderBy('created_at', 'desc')->get(), 200);
+            
+        } catch (\Exception $e) {
+            return response()->json(['message' => 'Error: ' . $e->getMessage()], 500);
+        }
     }
-
-    // ----------------------------------------------------------------
-    // 4. PUT: อัปเดตข้อมูลงาน (แก้ไข)
-    // ----------------------------------------------------------------
-    public function update(Request $request, $id)
-    {
-        DB::beginTransaction(); 
-        try {
-            $event = Event::with('event_date_times')->where('Event_id', $id)->first();
-            
-            if (!$event) {
-                return response()->json(['message' => 'ไม่พบข้อมูลงาน'], 404);
-            }
-
-            if ($event->Org_id != auth()->id()) {
-                return response()->json(['message' => 'ไม่มีสิทธิ์แก้ไขงานนี้'], 403);
-            }
-
-            if (in_array($event->eventStatus, ['เปิดขายบัตร', 'กำลังจัดแสดง', 'จบการแสดง'])) {
-                return response()->json(['message' => 'ไม่สามารถแก้ไขงานที่เปิดขายบัตรไปแล้วได้'], 403);
-            }
-
-            if ($request->has('show_rounds') && count($request->show_rounds) > 0) {
-                $rounds = collect($request->show_rounds);
-                $firstShowDate = Carbon::parse($rounds->min('startDT'));
-                $lastShowDate  = Carbon::parse($rounds->max('endDT'));
-
-                $rentalStart = $firstShowDate->copy()->subDays(2)->startOfDay(); 
-                $rentalEnd   = $lastShowDate->copy()->addDays(2)->endOfDay();
-
-                $approvedEvents = Event::with('event_date_times')
-                    ->where('Hall_id', $event->Hall_id)
-                    ->where('Event_id', '!=', $id) 
-                    ->whereIn('eventStatus', ['กำลังจะจัด', 'กำลังจัดแสดง'])
-                    ->get();
-
-                $conflictEvent = null;
-                $conflictDT = null;
-
-                foreach ($approvedEvents as $existingEvent) {
-                    foreach ($existingEvent->event_date_times as $dt) {
-                        $existingSetup = Carbon::parse($dt->startDT)->subDays(2)->startOfDay();
-                        $existingTeardown = Carbon::parse($dt->endDT)->addDays(2)->endOfDay();
-
-                        if ($rentalStart <= $existingTeardown && $rentalEnd >= $existingSetup) {
-                            $conflictEvent = $existingEvent;
-                            $conflictDT = $dt;
-                            break 2;
-                        }
-                    }
-                }
-
-                if ($conflictEvent && $conflictDT) {
-                    $bookedUntil = Carbon::parse($conflictDT->endDT)->addDays(2);
-                    return response()->json([
-                        'success' => false,
-                        'code' => 'VENUE_UNAVAILABLE',
-                        'lastBookedDate' => $bookedUntil->toDateTimeString(), 
-                        'message' => '❌ ไม่สามารถแก้ไขวันได้: วันใหม่ที่คุณเลือกไปทับซ้อนกับงาน "' . $conflictEvent->eventName . '"'
-                    ], 409);
-                }
-
-                EventDateTime::where('Event_id', $id)->delete();
-
-                foreach ($request->show_rounds as $round) {
-                    $dt = new EventDateTime();
-                    $dt->Event_id = $event->Event_id;
-                    $dt->roundNumber = $round['roundNumber'];
-                    $dt->startDT = $round['startDT'];
-                    $dt->endDT   = $round['endDT'];
-                    $dt->Sale_startDT = $round['saleStart'];
-                    $dt->Sale_endDT   = $round['saleEnd'] ?? null;
-                    $dt->save();
-                }
-
-                $event->rental_start = $rentalStart;
-                $event->rental_end   = $rentalEnd;
-            }
-
-            $event->eventName = $request->eventName ?? $event->eventName;
-            
-            if ($request->has('eventDescription')) {
-                $oldGrid = "";
-                if (str_contains($event->eventDescription, '||GRID_DATA||')) {
-                    $parts = explode('||GRID_DATA||', $event->eventDescription);
-                    $oldGrid = "||GRID_DATA||" . ($parts[1] ?? '{}');
-                }
-                $event->eventDescription = $request->eventDescription . $oldGrid;
-            }
-
-            if ($request->posterImage) {
-                $event->bannerImage = $request->posterImage;
-            }
-
-            if ($request->has('tickets') && count($request->tickets) > 0) {
-                $oldTicketZones = TicketZone::where('Event_id', $id)->get();
-                foreach($oldTicketZones as $tz) {
-                    HallZone::where('HallZone_id', $tz->HallZone_id)->delete();
-                    $tz->delete();
-                }
-
-                foreach ($request->tickets as $index => $t) {
-                    $hallZone = HallZone::create([
-                        'Hall_id'      => $event->Hall_id,
-                        'zoneName'     => $t['zoneName'] ?? 'Zone ' . ($index + 1),
-                        'zoneCapacity' => $t['quantity'] ?? 0
-                    ]);
-
-                    $ticketZone = new TicketZone();
-                    $ticketZone->Event_id = $event->Event_id;
-                    $ticketZone->HallZone_id = $hallZone->HallZone_id;
-                    $ticketZone->zoneName = $t['zoneName'];
-                    $ticketZone->colorZone = '#FFFFFF'; 
-                    $ticketZone->priceperTick = $t['price'];
-                    $ticketZone->totalSeat = $t['quantity'];
-                    $ticketZone->remainSeat = $t['quantity']; 
-                    $ticketZone->save();
-                }
-            }
-
-            $event->eventStatus = 'กำลังเตรียม'; 
-            $event->save();
-            DB::commit();
-
-            return response()->json(['message' => 'อัปเดตข้อมูลสำเร็จ กรุณารอแอดมินอนุมัติอีกครั้ง', 'event' => $event]);
-
-        } catch (\Exception $e) {
-            DB::rollBack();
-            return response()->json(['message' => 'Server Error: ' . $e->getMessage()], 500);
-        }
-    } // ✅ สิ้นสุดฟังก์ชัน update
-
-    // ----------------------------------------------------------------
-    // 5. DELETE: ลบข้อมูลงาน
-    // ----------------------------------------------------------------
-    public function destroy($id)
-    {
-        DB::beginTransaction(); 
-        try {
-            $event = Event::where('Event_id', $id)->first();
-
-            if (!$event) {
-                return response()->json(['message' => 'ไม่พบข้อมูลงาน'], 404);
-            }
-
-            if ($event->Org_id != auth()->id()) {
-                return response()->json(['message' => 'ไม่มีสิทธิ์ลบงานนี้'], 403);
-            }
-
-            if (in_array($event->eventStatus, ['เปิดขายบัตร', 'กำลังจัดแสดง', 'จบการแสดง'])) {
-                return response()->json(['message' => 'ไม่สามารถลบงานที่เปิดขายบัตรไปแล้วได้'], 403);
-            }
-
-            EventDateTime::where('Event_id', $id)->delete();
-            
-            $ticketZones = TicketZone::where('Event_id', $id)->get();
-            foreach($ticketZones as $tz) {
-                HallZone::where('HallZone_id', $tz->HallZone_id)->delete();
-                $tz->delete();
-            }
-
-            $event->delete();
-
-            DB::commit();
-            return response()->json(['message' => 'ลบข้อมูลสำเร็จ']);
-
-        } catch (\Exception $e) {
-            DB::rollBack();
-            return response()->json(['message' => 'Server Error: ' . $e->getMessage()], 500);
-        }
-    } // ✅ สิ้นสุดฟังก์ชัน destroy
-
-} // ✅ สิ้นสุด Class
+}
