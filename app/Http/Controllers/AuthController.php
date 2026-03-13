@@ -30,7 +30,7 @@ class AuthController extends Controller
             'lastnameMB'  => $fields['lastnameMB'],
             'emailMB'     => $fields['emailMB'],
             // ใน Model User.php เราใส่ cast hashed ไว้แล้ว ส่งค่าไปตรงๆ ได้เลย
-            'passwordMB'  => $fields['passwordMB'], 
+            'passwordMB'  => Hash::make($fields['passwordMB']),
             'telMB'       => $fields['telMB'],
             'personalID'  => $fields['personalID'] ?? null,
             'gender'      => $fields['gender'],

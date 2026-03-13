@@ -12,55 +12,90 @@ use Illuminate\Support\Facades\DB;
 class BookingController extends Controller
 {
     // =================================================================
-    // ดูรายการจองของฉัน (My Tickets)
+    // 1. ดูรายการจองของฉัน (My Tickets) - เวอร์ชันหุ้มเกราะกัน Error 500
     // =================================================================
     public function index(Request $request)
     {
+        try {
+            
+            $userId = Auth::id(); 
 
-        $myTickets = Booking::where('Mem_id', $request->user()->Mem_id)
-            ->join('event_date_times', 'bookings.Datetime_id', '=', 'event_date_times.Datetime_id')
-            ->join('events', 'event_date_times.Event_id', '=', 'events.Event_id') 
-            ->join('ticket_zones', 'bookings.Zone_id', '=', 'ticket_zones.Zone_id')
-            ->select(
-                'bookings.Booking_id',
-                'events.eventName',          // ชื่อคอนเสิร์ต
-                'event_date_times.startDT',  // วันเวลาแสดง
-                'ticket_zones.zoneName',     // ชื่อโซน
-                'bookings.quantity',         // จำนวน
-                'bookings.totalPrice',       // ราคา
-                'bookings.BKStatus'          // สถานะ
-            )
-            ->orderBy('bookings.created_at', 'desc')
-            ->get();
+            $myTickets = DB::table('bookings')
+                ->where('bookings.Mem_id', $userId)
+                ->join('event_date_times', 'bookings.Datetime_id', '=', 'event_date_times.Datetime_id')
+                ->join('events', 'event_date_times.Event_id', '=', 'events.Event_id') 
+                ->select(
+                    'bookings.Booking_id as id', 
+                    'events.eventName as event_name',        
+                    'events.bannerImage as image',           
+                    'event_date_times.startDT as date',      
+                    'bookings.totalPrice as amount',         
+                    'bookings.BKStatus'          
+                )
+                ->orderBy('bookings.created_at', 'desc')
+                ->get();
 
-        return response()->json($myTickets);
+            // จัดการข้อมูลให้ปลอดภัย ไม่ให้แครชเวลาเจอค่า null
+            $formattedTickets = $myTickets->map(function ($ticket) {
+                
+                // จัดการวันที่
+                $formattedDate = 'N/A';
+                if (!empty($ticket->date)) {
+                    $formattedDate = \Carbon\Carbon::parse($ticket->date)->translatedFormat('d M Y');
+                }
+
+                // จัดการรูปภาพ
+                $imageUrl = "https://images.unsplash.com/photo-1470225620780-dba8ba36b745?q=80&w=1000";
+                if (!empty($ticket->image)) {
+                    $imageUrl = str_starts_with($ticket->image, 'http') ? $ticket->image : asset('storage/' . $ticket->image);
+                }
+
+                return [
+                    'id'           => $ticket->id,
+                    'event_name'   => $ticket->event_name,
+                    'image'        => $imageUrl,
+                    'date'         => $formattedDate,
+                    // ทำให้เลข Order ดูเท่ขึ้น เช่น บิล ID 35 จะกลายเป็น ORD-0035
+                    'order_number' => 'ORD-' . str_pad($ticket->id, 4, '0', STR_PAD_LEFT), 
+                    // ใส่ลูกน้ำให้ราคา
+                    'amount'       => number_format($ticket->amount, 0),
+                    // ดักสถานะให้ตรงกับ React
+                    'status'       => ($ticket->BKStatus === 'ชำระเงินแล้ว') ? 'success' : 'pending'
+                ];
+            });
+
+            return response()->json($formattedTickets, 200);
+
+        } catch (\Exception $e) {
+            return response()->json([
+                'error' => 'Backend Error: ' . $e->getMessage(),
+                'line' => $e->getLine()
+            ], 500);
+        }
     }
 
     // =================================================================
-    // จองและล็อกที่นั่ง (Store / Hold Seats)
+    // 2. จองและล็อกที่นั่ง (Store / Hold Seats)
     // =================================================================
     public function store(Request $request)
     {
-        // 1. ตรวจสอบข้อมูลที่ส่งมาจาก Frontend
         $request->validate([
             'Datetime_id' => 'required|integer',
             'Zone_id'     => 'required|integer',
-            'seat_ids'    => 'required|array', // รับเป็น Array ของเลขที่นั่ง (Seat_id)
+            'seat_ids'    => 'required|array', 
         ]);
 
-        // 2. ใช้ Transaction ป้องกันข้อมูลพังหากเกิด Error ระหว่างทาง
         return DB::transaction(function () use ($request) {
             $seatIds = $request->seat_ids;
             $ticketQty = count($seatIds);
             
-            // ดึง ID สมาชิกที่ล็อกอินอยู่ (ถ้ายังไม่ล็อกอิน ให้ค่าเริ่มต้นเป็น 1 เพื่อทดสอบก่อน)
-            $userId = Auth::id() ?? 1; 
+            
+            $userId = Auth::id() ?? 1;
 
-            // 3. เช็คว่าที่นั่งทั้งหมดที่ส่งมายัง 'ว่าง' อยู่จริงๆ
             $availableSeats = DB::table('seats')
                 ->whereIn('Seat_id', $seatIds)
                 ->where('SeatStatus', 'ว่าง')
-                ->lockForUpdate() // ล็อก Row ไว้ไม่ให้ Request อื่นมาแย่งอ่าน
+                ->lockForUpdate() 
                 ->get();
 
             if ($availableSeats->count() !== $ticketQty) {
@@ -69,23 +104,30 @@ class BookingController extends Controller
                 ], 409);
             }
 
-            // 4. อัปเดตสถานะเป็น 'กำลังจอง'
-            DB::table('seats')
-                ->whereIn('Seat_id', $seatIds)
-                ->update([
-                    'SeatStatus' => 'กำลังจอง',
-                    'updated_at' => now() 
-                ]);
-
-            // 5. คำนวณราคา
+            // ⭐️ ดึงข้อมูลโซน
             $zone = TicketZone::where('Zone_id', $request->Zone_id)
                 ->lockForUpdate()
                 ->first();
                 
-            $ticketPrice = $zone->priceperTick; // 👈 ตัวแปรราคาคือ $ticketPrice
+            // ✅ แก้ไข: เพิ่มการเช็ค ถ้าหาโซนไม่เจอให้หยุดทำงานและบอก Error
+            if (!$zone) {
+                return response()->json([
+                    'message' => 'ไม่พบข้อมูลโซนที่นั่ง ID: ' . $request->Zone_id
+                ], 404);
+            }
+
+            // ตอนนี้มั่นใจได้แล้วว่า $zone ไม่เป็น null แน่นอน
+            $ticketPrice = $zone->priceperTick; 
             $totalPrice = $ticketPrice * $ticketQty;
 
-            // 6. สร้างบิล (สถานะ 'รอการชำระเงิน') 
+            // อัปเดตสถานะที่นั่ง
+            DB::table('seats')
+                ->whereIn('Seat_id', $seatIds)
+                ->update([
+                    'SeatStatus' => 'รอชำระเงิน', 
+                    'updated_at' => now() 
+                ]);
+
             $booking = Booking::create([
                 'Mem_id'      => $userId,
                 'Datetime_id' => $request->Datetime_id,
@@ -96,9 +138,7 @@ class BookingController extends Controller
                 'BKStatus'    => 'รอการชำระเงิน' 
             ]);
 
-            // 7. บันทึกรายละเอียดที่นั่งลง BookingDetail
             foreach ($seatIds as $seatId) {
-                // ถ้าตอนสร้าง DB คุณตั้งไว้ว่าให้ใช้ 'Pending'
                 BookingDetail::create([
                     'Booking_id' => $booking->Booking_id, 
                     'Seat_id' => $seatId,
@@ -107,10 +147,8 @@ class BookingController extends Controller
                 ]);
             }
             
-            // 8. ตัดยอดที่นั่งคงเหลือของโซนนั้นๆ
             $zone->decrement('remainSeat', $ticketQty);
 
-            // 9. ส่งข้อมูลการจองสำเร็จกลับไปให้ Frontend
             return response()->json([
                 'message'    => 'ล็อกที่นั่งและสร้างรายการจองสำเร็จ',
                 'booking_id' => $booking->Booking_id
@@ -119,60 +157,100 @@ class BookingController extends Controller
     }
 
     // =================================================================
-    // 1. ยืนยันการชำระเงินสำเร็จ (Success Payment)
+    // 3. ยืนยันการชำระเงินสำเร็จ ออกตั๋ว และบันทึกยอดเงิน
     // =================================================================
-    public function confirmPayment($bookingId)
+    public function confirmPayment(Request $request, $bookingId)
     {
-        return DB::transaction(function () use ($bookingId) {
+        $amount = $request->input('amount', 0); 
+
+        return DB::transaction(function () use ($bookingId, $amount) {
+            
+            // 1. เช็คว่ามีบิลนี้จริงไหม
             $booking = Booking::where('Booking_id', $bookingId)->first();
             if (!$booking) return response()->json(['message' => 'ไม่พบบิลนี้ในระบบ'], 404);
 
-            // 1. อัปเดตสถานะบิลหลัก
+            // 2. อัปเดตสถานะบิลหลัก
             $booking->update(['BKStatus' => 'ชำระเงินแล้ว']);
 
-            // 2. อัปเดตสถานะตั๋วให้พร้อมสแกนเข้างาน
-            BookingDetail::where('Booking_id', $bookingId)->update(['ETStatus' => 'ใช้งานได้']);
+            // ⭐️ 3. ดึงรายละเอียดบิลมาวนลูปเพื่อสร้าง QRCode และ issueDate ทีละใบ
+            $bookingDetails = DB::table('booking_details')
+                                ->where('Booking_id', $bookingId)
+                                ->orderBy('Bdetail_id', 'asc') // เรียงตาม ID เก้าอี้ใบแรกไปใบสุดท้าย
+                                ->get();
 
-            // 3. เปลี่ยนสถานะที่นั่งเป็น 'จองแล้ว' ถาวร (คนอื่นกดไม่ได้แล้ว)
-            $seatIds = BookingDetail::where('Booking_id', $bookingId)->pluck('Seat_id');
+            foreach ($bookingDetails as $index => $detail) {
+                // สร้างรูปแบบ TKT-0041-0001 (เอา Booking_id มาต่อกับลำดับที่ของตั๋ว)
+                $ticketCode = 'TKT-' . str_pad($bookingId, 4, '0', STR_PAD_LEFT) . '-' . str_pad($index + 1, 4, '0', STR_PAD_LEFT);
+
+                DB::table('booking_details')
+                    ->where('Bdetail_id', $detail->Bdetail_id)
+                    ->update([
+                        'ETStatus'  => 'ใช้งานได้',
+                        'QRCode'    => $ticketCode, // บันทึกรหัส TKT-XXXX-YYYY
+                        'issueDate' => now()        // บันทึกวันเวลาปัจจุบันที่ออกตั๋ว
+                    ]);
+            }
+
+            // 4. เปลี่ยนสถานะเก้าอี้ในผังให้เป็น 'จองแล้ว'
+            $seatIds = $bookingDetails->pluck('Seat_id');
             DB::table('seats')->whereIn('Seat_id', $seatIds)->update(['SeatStatus' => 'จองแล้ว']);
 
-            return response()->json(['message' => 'ชำระเงินสำเร็จ ออกตั๋วเรียบร้อย!']);
+            // 5. บันทึกข้อมูลลงตาราง payments
+            DB::table('payments')->insert([
+                'Booking_id' => $bookingId,
+                'PMDate'     => now(), 
+                'Amount'     => $amount,
+                'PMStatus'   => 'ชำระเรียบร้อยแล้ว', 
+                'created_at' => now(),
+                'updated_at' => now()
+            ]);
+
+            return response()->json(['message' => 'ชำระเงินและบันทึกประวัติสำเร็จ ออกตั๋วเรียบร้อย!']);
         });
     }
 
     // =================================================================
-    // 2. ยกเลิกการจองและคืนที่นั่ง (Cancel Payment)
+    // 4. ยกเลิกการจองและคืนที่นั่ง (Cancel Payment)
     // =================================================================
     public function cancelPayment($bookingId)
     {
-        return DB::transaction(function () use ($bookingId) {
-            $booking = Booking::where('Booking_id', $bookingId)->first();
-            if (!$booking) return response()->json(['message' => 'ไม่พบบิลนี้ในระบบ'], 404);
+        try {
+            return DB::transaction(function () use ($bookingId) {
+                // 1. หาบิล
+                $booking = DB::table('bookings')->where('Booking_id', $bookingId)->first();
+                if (!$booking) {
+                    return response()->json(['message' => 'ไม่พบบิลนี้ในระบบ'], 404);
+                }
 
-            // 1. เปลี่ยนสถานะบิลหลักเป็น 'ยกเลิก'
-            $booking->update(['BKStatus' => 'ยกเลิก']);
+                // 2. เปลี่ยนสถานะบิล
+                DB::table('bookings')->where('Booking_id', $bookingId)->update(['BKStatus' => 'ยกเลิก']);
+                DB::table('booking_details')->where('Booking_id', $bookingId)->update(['ETStatus' => 'ถูกยกเลิก']);
 
-            // 2. เปลี่ยนสถานะตั๋วทุกใบเป็น 'ถูกยกเลิก'
-            BookingDetail::where('Booking_id', $bookingId)->update(['ETStatus' => 'ถูกยกเลิก']);
+                // 3. หาที่นั่งในบิลนี้
+                $seatIds = DB::table('booking_details')->where('Booking_id', $bookingId)->pluck('Seat_id');
+                
+                // 4. คืนสถานะที่นั่งให้เป็น 'ว่าง'
+                if ($seatIds->count() > 0) {
+                    DB::table('seats')->whereIn('Seat_id', $seatIds)->update(['SeatStatus' => 'ว่าง']);
+                }
 
-            // 3. ⭐️ สำคัญ: คืนเก้าอี้ให้กลับมาเป็น 'ว่าง'
-            $seatIds = BookingDetail::where('Booking_id', $bookingId)->pluck('Seat_id');
-            DB::table('seats')->whereIn('Seat_id', $seatIds)->update(['SeatStatus' => 'ว่าง']);
+                // 5. คืนโควต้าให้โซน
+                DB::table('ticket_zones')->where('Zone_id', $booking->Zone_id)->increment('remainSeat', $booking->quantity);
 
-            // 4. คืนยอดที่นั่งคงเหลือกลับไปให้โซน
-            DB::table('ticket_zones')->where('Zone_id', $booking->Zone_id)->increment('remainSeat', $booking->quantity);
-
-            return response()->json(['message' => 'ยกเลิกรายการและคืนที่นั่งสำเร็จ']);
-        });
+                return response()->json(['message' => 'ยกเลิกรายการและคืนที่นั่งสำเร็จ']);
+            });
+        } catch (\Exception $e) {
+            // ถ้ามีอะไรพัง จะได้ส่ง Error กลับไปให้หน้าเว็บรู้
+            return response()->json(['message' => 'Backend Error: ' . $e->getMessage()], 500);
+        }
     }
+
     // =================================================================
-    // ดึงข้อมูลตั๋วเพื่อไปโชว์หน้า E-Ticket (เวอร์ชันจับ Error)
+    // 5. ดึงข้อมูลตั๋วเพื่อไปโชว์หน้า E-Ticket
     // =================================================================
     public function getTickets($bookingId)
     {
         try {
-            // 1. ดึงข้อมูลหลักของบิล (ตัดตาราง halls ออกก่อน กันพัง)
             $bookingInfo = DB::table('bookings')
                 ->join('event_date_times', 'bookings.Datetime_id', '=', 'event_date_times.Datetime_id')
                 ->join('events', 'event_date_times.Event_id', '=', 'events.Event_id')
@@ -187,14 +265,12 @@ class BookingController extends Controller
 
             if (!$bookingInfo) return response()->json(['message' => 'ไม่พบบิล'], 404);
 
-            // 2. ดึงข้อมูลที่นั่งในบิลนั้น
             $seats = DB::table('booking_details')
                 ->join('seats', 'booking_details.Seat_id', '=', 'seats.Seat_id')
                 ->where('booking_details.Booking_id', $bookingId)
                 ->select('seats.SeatRow', 'seats.SeatNo')
                 ->get();
 
-            // 3. สร้างรหัสตั๋วแบบสุ่มไปก่อน (หลีกเลี่ยงการเรียก ID ที่อาจจะไม่มี)
             $ticketList = $seats->map(function ($seat, $index) use ($bookingId) {
                 return [
                     'seat' => $seat->SeatRow . $seat->SeatNo,
@@ -206,15 +282,143 @@ class BookingController extends Controller
                 'eventName' => $bookingInfo->eventName,
                 'eventDate' => \Carbon\Carbon::parse($bookingInfo->startDT)->translatedFormat('l, d F Y'),
                 'eventTime' => \Carbon\Carbon::parse($bookingInfo->startDT)->format('H:i') . ' - ' . \Carbon\Carbon::parse($bookingInfo->endDT)->format('H:i') . ' น.',
-                'venue' => 'สถานที่จัดงาน (ระบบอัตโนมัติ)', // ฮาร์ดโค้ดไว้ก่อนกันพัง
+                'venue' => 'สถานที่จัดงาน (ระบบอัตโนมัติ)',
                 'zone' => $bookingInfo->zoneName,
                 'tickets' => $ticketList
             ]);
 
         } catch (\Exception $e) {
-            // 🔴 ถ้าพัง มันจะพ่น Error ออกมาบอกตรงนี้เลยครับ!
             return response()->json([
                 'message' => 'DB Error: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    // =================================================================
+    // 6. แจ้งเตือนการชำระเงินสำเร็จ และเปลี่ยนสถานะที่นั่ง + บันทึกบิลลง Payments
+    // =================================================================
+    public function paymentSuccess(Request $request, $bookingId) {
+        // รับค่ายอดเงินที่ส่งมาจากหน้า QR Code (ถ้าไม่ได้ส่งมาให้เป็น 0)
+        $amount = $request->input('amount', 0); 
+
+        return DB::transaction(function () use ($bookingId, $amount) {
+            
+            // 1. อัปเดตสถานะบิลหลักให้เป็น 'ชำระเงินแล้ว'
+            DB::table('bookings')
+                ->where('Booking_id', $bookingId)
+                ->update(['BKStatus' => 'ชำระเงินแล้ว']);
+
+            // ⭐️ 2. บันทึกข้อมูลลงตาราง payments
+            DB::table('payments')->insert([
+                'Booking_id' => $bookingId,
+                'PMDate'     => now(), // ใช้วันเวลาปัจจุบัน
+                'Amount'     => $amount,
+                'PMStatus'   => 'ชำระเรียบร้อยแล้ว', 
+                'created_at' => now(),
+                'updated_at' => now()
+            ]);
+
+            // 3. หา Seat_id ทั้งหมดในบิลนี้
+            $seatIds = DB::table('booking_details')
+                        ->where('Booking_id', $bookingId)
+                        ->pluck('Seat_id');
+            
+            // 4. เปลี่ยนสถานะเก้าอี้ให้เป็น 'จองแล้ว'
+            DB::table('seats')
+                ->whereIn('Seat_id', $seatIds)
+                ->update(['SeatStatus' => 'จองแล้ว']); 
+
+            // 5. อัปเดตสถานะ E-Ticket ให้ใช้งานได้
+            DB::table('booking_details')
+                ->where('Booking_id', $bookingId)
+                ->update(['ETStatus' => 'ใช้งานได้']);
+
+            return response()->json(['message' => 'Payment recorded successfully']);
+        });
+    }
+    // =================================================================
+    // 7. ดูรายละเอียดคำสั่งซื้อรายตัว (Order Detail) ⭐️ (ส่วนที่แก้ไข)
+    // =================================================================
+    public function getOrderDetails($orderId)
+    {
+        try {
+            // ⭐️ 1. ดึงข้อมูลหลัก (เปลี่ยนเป็น leftJoin ทั้งหมด เพื่อป้องกันการเตะข้อมูลทิ้ง)
+            $orderInfo = DB::table('bookings')
+                ->where('bookings.Booking_id', $orderId)
+                ->leftJoin('event_date_times', 'bookings.Datetime_id', '=', 'event_date_times.Datetime_id')
+                ->leftJoin('events', 'event_date_times.Event_id', '=', 'events.Event_id')
+                ->leftJoin('ticket_zones', 'bookings.Zone_id', '=', 'ticket_zones.Zone_id')
+                // เอา leftJoin payments ออกไปเลย เพราะไม่ได้ใช้งานใน Response ช่วยลดโอกาส Error
+                ->select(
+                    'bookings.Booking_id',
+                    'events.eventName',
+                    'event_date_times.startDT',
+                    'event_date_times.endDT',
+                    'ticket_zones.zoneName',
+                    'bookings.quantity',
+                    'bookings.totalPrice',
+                    'bookings.BKStatus',
+                    'bookings.created_at'
+                )->first();
+
+            if (!$orderInfo) {
+                return response()->json(['message' => 'ไม่พบข้อมูลคำสั่งซื้อ'], 404);
+            }
+
+            // ⭐️ 2. ดึงที่นั่ง
+            $seatRecords = DB::table('booking_details')
+                ->join('seats', 'booking_details.Seat_id', '=', 'seats.Seat_id')
+                ->where('booking_details.Booking_id', $orderId)
+                ->select('seats.SeatRow', 'seats.SeatNo')
+                ->get();
+            
+            $seats = $seatRecords->map(function ($seat) {
+                return $seat->SeatRow . $seat->SeatNo;
+            })->toArray();
+
+            // ⭐️ 3. คำนวณราคา (ดักค่า Null ไว้เสมอ ป้องกัน Error Type Mismatch)
+            $quantity = $orderInfo->quantity ?? 0;
+            $totalPrice = $orderInfo->totalPrice ?? 0;
+            $fee = $quantity * 20;
+            $subtotal = $totalPrice - $fee;
+
+            // ⭐️ 4. จัดการวันที่ (ดักเช็ค Null เสมอก่อนส่งเข้าฟังก์ชัน Carbon)
+            $eventDate = $orderInfo->startDT ? \Carbon\Carbon::parse($orderInfo->startDT)->translatedFormat('l, d M Y') : 'ไม่ระบุวันที่';
+            $startTime = $orderInfo->startDT ? \Carbon\Carbon::parse($orderInfo->startDT)->format('H:i') : '';
+            $endTime = $orderInfo->endDT ? \Carbon\Carbon::parse($orderInfo->endDT)->format('H:i') : '';
+            
+            $eventTime = $startTime;
+            if ($endTime) $eventTime .= ' - ' . $endTime;
+
+            $transactionDate = $orderInfo->created_at ? \Carbon\Carbon::parse($orderInfo->created_at)->format('d/m/Y H:i:s') : '-';
+
+            // ⭐️ 5. แมปข้อมูลเตรียมส่งกลับให้ React
+            $response = [
+                'id' => $orderInfo->Booking_id,
+                'order_number' => 'ORD-' . str_pad($orderInfo->Booking_id, 4, '0', STR_PAD_LEFT),
+                'booking_id' => $orderInfo->Booking_id,
+                'status' => ($orderInfo->BKStatus === 'ชำระเงินแล้ว') ? 'success' : (($orderInfo->BKStatus === 'ยกเลิก') ? 'failed' : 'pending'),
+                'event_name' => $orderInfo->eventName ?? 'ไม่ระบุอีเวนต์',
+                'ticket_count' => $quantity,
+                'event_date' => $eventDate,
+                'event_time' => $eventTime,
+                'venue' => 'สถานที่จัดงาน (ระบบอัตโนมัติ)',
+                'zone' => $orderInfo->zoneName ?? 'ไม่ระบุโซน',
+                'seats' => !empty($seats) ? implode(', ', $seats) : 'ไม่ระบุที่นั่ง',
+                'subtotal' => $subtotal,
+                'fee' => $fee,
+                'total' => $totalPrice,
+                'payment_method' => 'Thai QR Payment',
+                'transaction_date' => $transactionDate,
+            ];
+
+            return response()->json($response, 200);
+
+        } catch (\Exception $e) {
+            // เพิ่มการ Return ข้อความ Error กลับไปให้ Front-end จะได้รู้ว่าบั๊กบรรทัดไหน
+            return response()->json([
+                'message' => 'Backend Error: ' . $e->getMessage(),
+                'line' => $e->getLine()
             ], 500);
         }
     }

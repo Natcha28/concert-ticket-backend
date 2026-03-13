@@ -69,10 +69,15 @@ Route::group(['middleware' => ['auth:sanctum']], function () {
     Route::post('/bookings', [BookingController::class, 'store']);
     Route::post('/payments', [PaymentController::class, 'store']);
     Route::get('/my-tickets', [BookingController::class, 'index']);
+    Route::get('/bookings', [BookingController::class, 'index']);
+    Route::get('/orders', [\App\Http\Controllers\BookingController::class, 'index']);
+    Route::get('/orders/{id}', [\App\Http\Controllers\BookingController::class, 'getOrderDetails']);
+   
+    
     
     // ⭐️ API สำหรับหน้าประวัติการสั่งซื้อ (ย้าย orders/{id} ลงมาไว้ที่นี่ครับ) ⭐️
-    Route::get('/orders', [OrderController::class, 'index']);
-    Route::get('/orders/{id}', [OrderController::class, 'show']);
+    //Route::get('/orders', [OrderController::class, 'index']);
+    //Route::get('/orders/{id}', [OrderController::class, 'show']);
     
     // --- Organizer (ผู้จัดงาน) ---
     Route::get('/events', [EventController::class, 'index']); 

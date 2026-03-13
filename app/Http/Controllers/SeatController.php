@@ -10,40 +10,71 @@ class SeatController extends Controller
     public function getSeats(Request $request)
     {
         try {
-            // 1. รับค่าจาก URL (รองรับทั้งแบบ zone_id ตรงๆ หรือ eventId + zoneName)
-            $zoneId = $request->query('zone_id');
             $eventId = $request->query('eventId');
             $zoneName = $request->query('zoneName');
 
-            // 2. เริ่มสร้าง Query สำหรับดึงตาราง seats
-            $query = DB::table('seats');
-
-            if ($zoneId) {
-                // กรณีที่ 1: หน้า React ส่ง zone_id มาตรงๆ (เช่น ?zone_id=164)
-                $query->where('Zone_id', $zoneId);
-            } elseif ($eventId && $zoneName) {
-                // กรณีที่ 2: หน้า React ส่ง eventId และ zoneName มา (เช่น ?eventId=44&zoneName=L1)
-                $query->join('ticket_zones', 'seats.Zone_id', '=', 'ticket_zones.Zone_id') 
-                      ->where('ticket_zones.Event_id', $eventId)
-                      ->where('ticket_zones.zoneName', $zoneName)
-                      ->select('seats.*'); // เอาแค่ข้อมูลที่นั่ง ไม่เอาข้อมูลโซนมาปน
-            } else {
-                // ถ้าไม่ส่งอะไรมาเลยให้เตือนกลับไป
-                return response()->json(['error' => 'Missing parameters (zone_id OR eventId+zoneName required)'], 400);
+            if (!$eventId || !$zoneName) {
+                return response()->json(['error' => 'Missing parameters'], 400);
             }
 
-            // 3. ดึงข้อมูลจากฐานข้อมูล
-            $seats = $query->get();
+            // 1. ดึงข้อมูลที่นั่งและประวัติบิล โดย "เรียงลำดับเวลาบิลจากใหม่ไปเก่า (desc)"
+            $seats = DB::table('seats')
+                ->join('ticket_zones', 'seats.Zone_id', '=', 'ticket_zones.Zone_id')
+                ->leftJoin('booking_details', 'seats.Seat_id', '=', 'booking_details.Seat_id')
+                ->leftJoin('bookings', 'booking_details.Booking_id', '=', 'bookings.Booking_id')
+                ->where('ticket_zones.Event_id', $eventId)
+                ->where('ticket_zones.zoneName', $zoneName)
+                ->select(
+                    'seats.Seat_id',
+                    'seats.Zone_id',
+                    'seats.SeatRow',
+                    'seats.SeatNo',
+                    'seats.SeatStatus as original_status',
+                    'bookings.BKStatus',
+                    'bookings.created_at' // 👈 ดึงเวลาสร้างบิลมาด้วย
+                )
+                // ⭐️ สำคัญมาก: เรียงบิลที่สร้างล่าสุดขึ้นมาก่อน เพื่อเช็คสถานะปัจจุบัน
+                ->orderBy('bookings.created_at', 'desc') 
+                ->get();
 
-            // 4. ส่งกลับไปให้ React แบบเพียวๆ เลย ไม่ต้องแปลงร่าง
-            // เพื่อให้หน้า React ของคุณสามารถเรียกใช้ dbSeat.Seat_id, dbSeat.SeatRow ได้ตรงเป๊ะ!
-            return response()->json($seats);
+            // 2. จัดกลุ่มตามเลขที่นั่ง
+            $groupedSeats = $seats->groupBy(function ($item) {
+                return $item->SeatRow . str_pad($item->SeatNo, 2, '0', STR_PAD_LEFT);
+            });
+
+            $formattedSeats = [];
+
+            // 3. วนลูปเช็คสถานะ
+            foreach ($groupedSeats as $seatKey => $group) {
+                // ⭐️ หยิบเอา "ข้อมูลแถวแรก" ซึ่งจะเป็น "บิลใบล่าสุด" มาเช็คเท่านั้น
+                $latestRecord = $group->first(); 
+                
+                $finalStatus = 'ว่าง';
+
+                // ถ้าบิล "ใบล่าสุด" ยังรอจ่าย หรือจ่ายแล้ว แปลว่าโดนจองแล้ว!
+                if ($latestRecord->BKStatus === 'รอการชำระเงิน' || $latestRecord->BKStatus === 'ชำระเงินแล้ว') {
+                    $finalStatus = 'ขายแล้ว';
+                } 
+                // แต่ถ้าไม่มีบิล หรือบิลล่าสุดคือ 'ยกเลิก' ให้ยึดตามคอลัมน์ SeatStatus ของตารางเก้าอี้
+                else if ($latestRecord->original_status !== 'ว่าง') {
+                    $finalStatus = 'ขายแล้ว';
+                }
+
+                $formattedSeats[] = [
+                    'Seat_id'    => $latestRecord->Seat_id,
+                    'Zone_id'    => $latestRecord->Zone_id,
+                    'SeatRow'    => $latestRecord->SeatRow,
+                    'SeatNo'     => str_pad($latestRecord->SeatNo, 2, '0', STR_PAD_LEFT),
+                    'SeatStatus' => $finalStatus
+                ];
+            }
+
+            return response()->json($formattedSeats);
 
         } catch (\Exception $e) {
-            // ดักจับ Error เผื่อฐานข้อมูลมีปัญหา
             return response()->json([
                 'error' => true,
-                'message' => 'Database Error: ' . $e->getMessage()
+                'message' => $e->getMessage()
             ], 500);
         }
     }
