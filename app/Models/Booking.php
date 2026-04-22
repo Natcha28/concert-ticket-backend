@@ -22,4 +22,10 @@ class Booking extends Model
         'totalPrice', 
         'BKStatus'
     ];
+
+    // ✅ เพิ่มส่วนนี้เข้าไป เพื่อให้รู้ว่า 1 Booking มีหลาย BookingDetail
+    public function booking_details()
+    {
+        return $this->hasMany(BookingDetail::class, 'Booking_id', 'Booking_id');
+    }
 }

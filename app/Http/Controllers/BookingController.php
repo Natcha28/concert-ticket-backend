@@ -17,6 +17,7 @@ class BookingController extends Controller
     public function index(Request $request)
     {
         try {
+
             
             $userId = Auth::id(); 
 
@@ -60,7 +61,7 @@ class BookingController extends Controller
                     // ใส่ลูกน้ำให้ราคา
                     'amount'       => number_format($ticket->amount, 0),
                     // ดักสถานะให้ตรงกับ React
-                    'status'       => ($ticket->BKStatus === 'ชำระเงินแล้ว') ? 'success' : 'pending'
+                    'status' => ($ticket->BKStatus === 'ชำระเงินแล้ว') ? 'success' : (($ticket->BKStatus === 'ยกเลิก') ? 'failed' : 'pending')
                 ];
             });
 
@@ -204,6 +205,9 @@ class BookingController extends Controller
                 'created_at' => now(),
                 'updated_at' => now()
             ]);
+
+            // ⭐️ สิ่งที่ต้องเพิ่ม: นำโค้ดแจ้งเตือนมาใส่ตรงนี้ ⭐️
+           
 
             return response()->json(['message' => 'ชำระเงินและบันทึกประวัติสำเร็จ ออกตั๋วเรียบร้อย!']);
         });
@@ -410,6 +414,8 @@ class BookingController extends Controller
                 'total' => $totalPrice,
                 'payment_method' => 'Thai QR Payment',
                 'transaction_date' => $transactionDate,
+                // ✅ เพิ่มบรรทัดนี้เข้าไป เพื่อส่งเวลา Timestamp (วินาที) ไปให้ React คำนวณ
+                'created_at_timestamp' => $orderInfo->created_at ? \Carbon\Carbon::parse($orderInfo->created_at)->timestamp : 0,
             ];
 
             return response()->json($response, 200);

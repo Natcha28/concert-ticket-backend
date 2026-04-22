@@ -16,6 +16,10 @@ use App\Http\Controllers\OrganizerPaymentController;
 use App\Http\Controllers\AdminEventController;
 use App\Http\Controllers\SeatController; 
 use App\Http\Controllers\OrderController;
+use App\Http\Controllers\AdminController;
+use App\Http\Controllers\NotificationController;
+
+
 
 /*
 |--------------------------------------------------------------------------
@@ -49,6 +53,26 @@ Route::post('/payment/cancel/{bookingId}', [BookingController::class, 'cancelPay
 // API สำหรับให้หน้า E-Ticket ดึงข้อมูลไปโชว์ (เปิดเป็น Public เผื่อเจ้าหน้าที่สแกน)
 Route::get('/tickets/{bookingId}', [BookingController::class, 'getTickets']);
 
+Route::get('/admin/organizers', [AdminController::class, 'getOrganizers']);
+Route::get('/admin/events/{id}', [AdminController::class, 'getEventDetail']);
+
+Route::get('/user/notifications', [NotificationController::class, 'index']);
+
+
+Route::get('/admin/members', [AdminEventController::class, 'getMembers']);
+Route::get('/admin/events', [AdminEventController::class, 'getAllEvents']);
+Route::get('/admin/dashboard-stats', [AdminController::class, 'getDashboardStats']);
+Route::post('/admin/organizers/{id}/status', [AdminController::class, 'updateOrganizerStatus']);
+Route::patch('/events/{id}/status', [AdminEventController::class, 'updateStatus']);
+Route::get('/admin/payouts', [App\Http\Controllers\AdminController::class, 'getPayouts']);
+Route::get('/admin/orders', [App\Http\Controllers\AdminController::class, 'getOrders']);
+
+// ลบตัวที่ซ้ำออกให้แล้วครับ
+Route::get('/admin/finance-summary', [App\Http\Controllers\AdminController::class, 'getFinanceSummary']);
+Route::get('/admin/events-list', [App\Http\Controllers\AdminController::class, 'getAdminEvents']);
+Route::get('/admin/events/{id}/sales', [App\Http\Controllers\AdminController::class, 'getEventSalesDetail']);
+
+
 // ====================================================
 // 2. PROTECTED ROUTES (ต้องมี Token ล็อกอินเท่านั้น)
 // ====================================================
@@ -72,15 +96,14 @@ Route::group(['middleware' => ['auth:sanctum']], function () {
     Route::get('/bookings', [BookingController::class, 'index']);
     Route::get('/orders', [\App\Http\Controllers\BookingController::class, 'index']);
     Route::get('/orders/{id}', [\App\Http\Controllers\BookingController::class, 'getOrderDetails']);
-   
+    
     
     
     // ⭐️ API สำหรับหน้าประวัติการสั่งซื้อ (ย้าย orders/{id} ลงมาไว้ที่นี่ครับ) ⭐️
     //Route::get('/orders', [OrderController::class, 'index']);
     //Route::get('/orders/{id}', [OrderController::class, 'show']);
     
-    // --- Organizer (ผู้จัดงาน) ---
-    Route::get('/events', [EventController::class, 'index']); 
+    // --- Organizer (ผู้จัดงาน) --- 
     Route::get('/events/{id}', [EventController::class, 'show']);
     Route::put('/events/{id}', [EventController::class, 'update']);
     Route::delete('/events/{id}', [EventController::class, 'destroy']); 
@@ -96,12 +119,24 @@ Route::group(['middleware' => ['auth:sanctum']], function () {
     Route::get('/organizer/sales', [EventController::class, 'getSalesAnalytics']);
     Route::get('/organizer/dashboard', [EventController::class, 'getDashboardData']);
     Route::get('/organizer/events/{id}', [EventController::class, 'show']);
+    Route::post('/generate-promptpay', [PaymentController::class, 'generatePromptPay']); // ✅ 1. เติมบรรทัดนี้ เพื่อสร้าง QR Code
+    Route::get('/events', [EventController::class, 'index']);
+    Route::post('/organizer/events/{id}/publish-payment', [PaymentController::class, 'publishPayment']);
+    Route::post('/admin/organizers/{id}/status', [App\Http\Controllers\AdminController::class, 'updateOrganizerStatus']);
+    
+
+
 
     // --- Admin ---
     Route::get('/admin/pending-events', [AdminEventController::class, 'getPendingEvents']);
     Route::post('/admin/approve-deposit', [AdminEventController::class, 'approveDeposit']);
     Route::post('/admin/approve-organizer', [AdminEventController::class, 'approveOrganizer']);
-});
+    //Route::get('/admin/members', [App\Http\Controllers\AdminController::class, 'getAllMembers']);
+    Route::get('/admin/orders/{id}', [App\Http\Controllers\AdminController::class, 'getOrderDetail']);
+    
+
+ 
+    });   
 
 // --- Check DB ---
 Route::get('/check-db', function () {

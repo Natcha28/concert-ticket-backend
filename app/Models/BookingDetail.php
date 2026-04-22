@@ -25,4 +25,10 @@ class BookingDetail extends Model
         'Price_Per_Ticket', // ⚠️ แก้จาก ticketPrice เป็นตัวนี้ตามรูป
         'ETStatus'
     ];
+
+    // ✅ แก้ไข: เอาโค้ดที่ลอยๆ มาใส่ในฟังก์ชันให้ถูกต้อง (เปลี่ยนเป็น belongsTo เพราะมันคือ Detail ของ Booking)
+    public function booking()
+    {
+        return $this->belongsTo(Booking::class, 'Booking_id', 'Booking_id');
+    }
 }

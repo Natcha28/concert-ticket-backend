@@ -30,40 +30,48 @@ class UpdateEventStatus extends Command
         $updatedCount = 0;
 
         foreach ($events as $event) {
-            // ดึงข้อมูลเวลาแรกมาคำนวณ (กรณีมีหลายรอบ)
-            $dateTime = $event->event_date_times->first();
+            $oldStatus = $event->eventStatus;
             
-            // ถ้างานไหนไม่มีการตั้งเวลาไว้ ให้ข้ามไปก่อน
+            // 🚨 ข้ามการอัปเดต ถ้างานอยู่ในสถานะตั้งต้นที่ต้องใช้คนจัดการ (เงื่อนไข 1, 2, 8)
+            if (in_array($oldStatus, ['กำลังเตรียม', 'รอชำระเงิน', 'ยกเลิกงาน', 'draft', 'pending', 'rejected', 'APPROVED'])) {
+                continue; 
+            }
+
+            // ดึงข้อมูลเวลาแรกมาคำนวณ
+            $dateTime = $event->event_date_times->first();
             if (!$dateTime) continue;
 
-            $oldStatus = $event->eventStatus;
             $expectedStatus = $oldStatus; // ค่าตั้งต้น
 
-            // แปลงวันที่จาก DB เป็น Carbon Object เพื่อใช้เปรียบเทียบ
+            // แปลงวันที่จาก DB เป็น Carbon Object
             $saleStart = Carbon::parse($dateTime->Sale_startDT);
             $saleEnd   = $dateTime->Sale_endDT ? Carbon::parse($dateTime->Sale_endDT) : null;
             $eventStart = Carbon::parse($dateTime->startDT);
             $eventEnd   = Carbon::parse($dateTime->endDT);
 
-            // --- ลอจิกการตัดสินใจตามลำดับความสำคัญ (Priority) ---
-
-            // 1. เช็ค "เสร็จสิ้น": ถ้าเลยเวลาจบงาน หรือเลยเวลาปิดขายบัตรแล้ว
-            if ($now->greaterThanOrEqualTo($eventEnd) || ($saleEnd && $now->greaterThanOrEqualTo($saleEnd))) {
+            // --- ลอจิกการตัดสินใจ ล้อตามเงื่อนไขจาก Model ---
+            
+            // 7. เสร็จสิ้น (เลยเวลาจัดคอนเสิร์ตแล้ว)
+            if ($now->greaterThanOrEqualTo($eventEnd)) {
                 $expectedStatus = 'เสร็จสิ้น';
             }
-            // 2. เช็ค "กำลังจัด": ถ้าอยู่ในช่วงเวลาเริ่มโชว์จนถึงโชว์จบ
-            elseif ($now->greaterThanOrEqualTo($eventStart) && $now->lessThan($eventEnd)) {
+            // 6. กำลังจัด (ขณะนี้คือเวลาจัดคอนเสิร์ตอยู่)
+            elseif ($now->between($eventStart, $eventEnd)) {
                 $expectedStatus = 'กำลังจัด';
             }
-            // 3. เช็ค "บัตรขายหมด": ถ้าที่นั่งรวมทุกโซน (remainSeat) เหลือ 0 หรือน้อยกว่า
-            elseif ($event->ticket_zones->sum('remainSeat') <= 0) {
+            // 6(ซ้ำ). บัตรขายหมด 
+            elseif ($event->ticket_zones->count() > 0 && $event->ticket_zones->sum('remainSeat') <= 0) {
                 $expectedStatus = 'บัตรขายหมด';
             }
-            // 4. เช็ค "เปิดขายบัตร": ถ้าอยู่ในช่วงเวลาเริ่มขาย
-            elseif ($now->greaterThanOrEqualTo($saleStart)) {
-                $expectedStatus = 'เปิดขายบัตร';
+            // 5. ปิดการขาย (หมดเวลาขายบัตร แต่ยังไม่ถึงเวลาเริ่มงาน)
+            elseif ($saleEnd && $now->greaterThanOrEqualTo($saleEnd)) {
+                $expectedStatus = 'ปิดการขาย';
             }
-            // 5. สถานะเริ่มต้น: ถ้ายังไม่ถึงเวลาขาย
+            // 4. เปิดขาย (อยู่ในช่วงเวลาเริ่มขาย)
+            elseif ($now->greaterThanOrEqualTo($saleStart) && (!$saleEnd || $now->lessThan($saleEnd))) {
+                $expectedStatus = 'เปิดขาย';
+            }
+            // 3. กำลังจะจัด (ยังไม่ถึงเวลาขาย)
             else {
                 $expectedStatus = 'กำลังจะจัด';
             }

@@ -16,7 +16,7 @@ use Carbon\Carbon;
 
 class EventController extends Controller
 {
-   // =================================================================
+    // =================================================================
     // 1. หน้า "อีเวนต์ของฉัน" (My Events) - รายการงานของผู้จัด
     // =================================================================
     public function index()
@@ -28,35 +28,7 @@ class EventController extends Controller
                         ->orderBy('created_at', 'desc')
                         ->get();
 
-        $now = Carbon::now();
-
-        $events->transform(function ($event) use ($now) {
-            // 🚨 ถ้าสถานะดั้งเดิมคือ "กำลังเตรียม" หรือ "ยกเลิกงาน" ให้ข้ามการคำนวณเวลาไปเลย
-            if (!in_array($event->eventStatus, ['กำลังเตรียม', 'ยกเลิกงาน'])) {
-                
-                // คำนวณสถานะแบบ Real-time เฉพาะงานที่แอดมินอนุมัติแล้ว
-                $firstRound = $event->event_date_times->sortBy('Sale_startDT')->first();
-                if ($firstRound && $firstRound->Sale_startDT) {
-                    $saleStart = Carbon::parse($firstRound->Sale_startDT);
-                    $saleEnd = $firstRound->Sale_endDT ? Carbon::parse($firstRound->Sale_endDT) : null;
-
-                    if ($now->lessThan($saleStart)) {
-                        $event->eventStatus = 'กำลังจะจัด';
-                    } elseif ($now->greaterThanOrEqualTo($saleStart) && (!$saleEnd || $now->lessThanOrEqualTo($saleEnd))) {
-                        $event->eventStatus = 'เปิดขาย';
-                    } elseif ($saleEnd && $now->greaterThan($saleEnd)) {
-                        $event->eventStatus = 'ปิดการขาย';
-                    }
-                }
-
-                // เช็คบัตรหมด
-                $totalSeats = $event->ticket_zones->sum('totalSeat');
-                $remainSeats = $event->ticket_zones->sum('remainSeat');
-                if ($totalSeats > 0 && $remainSeats == 0) {
-                    $event->eventStatus = 'บัตรขายหมด';
-                }
-            }
-
+        $events->transform(function ($event) {
             // คำนวณที่นั่งเพื่อแสดงผล
             $totalSeats = $event->ticket_zones->sum('totalSeat');
             $remainSeats = $event->ticket_zones->sum('remainSeat');
@@ -75,7 +47,8 @@ class EventController extends Controller
                 'title'    => $event->eventName,
                 'date'     => $event->rental_start, 
                 'location' => $event->hall->Hall_Name ?? 'ไม่ระบุสถานที่',
-                'status'   => $event->eventStatus, // จะโชว์ "กำลังเตรียม" ถูกต้องแล้ว
+                // ✅ เรียกใช้สถานะ Real-time จากสูตรกลางของ Model แทนการคำนวณซ้ำใน Controller
+                'status'   => $event->calculated_status, 
                 'sold'     => $soldSeats,
                 'capacity' => $totalSeats,
                 'image'    => $imageUrl
@@ -84,6 +57,7 @@ class EventController extends Controller
         
         return response()->json($events);
     }
+
     // =================================================================
     // 2. หน้า "ดูรายละเอียดงาน" (Event Detail)
     // =================================================================
@@ -243,7 +217,12 @@ class EventController extends Controller
                     'members.emailMB as email',
                     'ticket_zones.zoneName as ticket',
                     'events.eventName as eventName',
-                    'bookings.BKStatus as status' 
+                    'bookings.BKStatus as status',
+                    // ✅ แก้ไขให้รองรับ PostgreSQL (ใช้ STRING_AGG แทน GROUP_CONCAT)
+                    DB::raw("(SELECT STRING_AGG(CONCAT(seats.\"SeatRow\", seats.\"SeatNo\"), ', ') 
+                             FROM booking_details 
+                             JOIN seats ON booking_details.\"Seat_id\" = seats.\"Seat_id\" 
+                             WHERE booking_details.\"Booking_id\" = bookings.\"Booking_id\") as seats")
                 )
                 ->orderBy('bookings.created_at', 'desc')
                 ->get();
@@ -328,30 +307,71 @@ class EventController extends Controller
                 ->where('events.Org_id', $orgId)
                 ->where('bookings.BKStatus', 'ชำระเงินแล้ว');
 
-            $totalSales = $successfulBookings->sum('totalPrice');
-            $ticketsSold = $successfulBookings->sum('quantity');
-            $totalCapacity = $events->flatMap->ticket_zones->sum('totalSeat');
+            $totalRevenue = $successfulBookings->sum('bookings.totalPrice');
+            $totalTicketsSold = $successfulBookings->sum('bookings.quantity');
+            $totalTickets = $events->flatMap->ticket_zones->sum('totalSeat');
 
-            $formattedEvents = $events->map(function($e) {
+            // คำนวณสถานะต่างๆ ของ Event
+            $statusActive = 0;
+            $statusPending = 0;
+            $statusClosed = 0;
+
+            $formattedEvents = $events->map(function($e) use (&$statusActive, &$statusPending, &$statusClosed) {
                 $sold = $e->ticket_zones->sum('totalSeat') - $e->ticket_zones->sum('remainSeat');
                 $total = $e->ticket_zones->sum('totalSeat');
+                
+                // คำนวณรายได้ต่อ 1 อีเวนต์
+                $revenue = DB::table('bookings')
+                    ->join('event_date_times', 'bookings.Datetime_id', '=', 'event_date_times.Datetime_id')
+                    ->where('event_date_times.Event_id', $e->Event_id)
+                    ->where('bookings.BKStatus', 'ชำระเงินแล้ว')
+                    ->sum('bookings.totalPrice');
+
+                $status = $e->calculated_status;
+                if (in_array($status, ['เปิดขายบัตร', 'เปิดขาย', 'On Sale', 'Selling'])) $statusActive++;
+                elseif (in_array($status, ['รอขาย', 'กำลังเตรียม', 'UPCOMING'])) $statusPending++;
+                else $statusClosed++;
+
                 return [
                     'id' => $e->Event_id,
                     'name' => $e->eventName,
                     'date' => $e->rental_start ? date('d/m/Y', strtotime($e->rental_start)) : 'ไม่ระบุ',
-                    'status' => $e->eventStatus,
+                    'salesStatus' => $status,
+                    'revenue' => (float) $revenue,
+                    'ticketsSold' => (int) $sold,
+                    'totalTickets' => (int) $total,
                     'progress' => $total > 0 ? round(($sold / $total) * 100) : 0
                 ];
             });
 
+            // หาอีเวนต์ที่ทำเงินสูงสุด
+            $topEvent = $formattedEvents->sortByDesc('revenue')->first();
+
+            // สมมติล่าสุดที่อนุมัติ (เอาอันใหม่สุดของวันนี้)
+            $latestEvent = $events->first();
+            $latestApproval = null;
+            if ($latestEvent && \Carbon\Carbon::parse($latestEvent->created_at)->isToday()) {
+                $latestApproval = [
+                    'id' => $latestEvent->Event_id,
+                    'name' => $latestEvent->eventName,
+                    'isToday' => true
+                ];
+            }
+
+            // พ่น JSON ให้ตรงกับที่ Frontend (Interface DashboardSummary) คาดหวัง
             return response()->json([
-                'stats' => [
-                    'totalSales' => number_format($totalSales, 0),
-                    'ticketsSold' => number_format($ticketsSold, 0),
-                    'ticketProgressText' => $totalCapacity > 0 ? round(($ticketsSold / $totalCapacity) * 100) . "% of total" : "0% of total",
-                    'activeEvents' => $events->whereIn('eventStatus', ['เปิดขายบัตร', 'กำลังเตรียม', 'On Sale', 'กำลังจะจัด'])->count(),
+                'overview' => [
+                    'totalRevenue' => (float) $totalRevenue,
+                    'revenueTrend' => '', // ปล่อยว่างไว้ก่อน หรือใส่เปอร์เซ็นต์ถ้ามีสูตรคำนวณ
+                    'totalTicketsSold' => (int) $totalTicketsSold,
+                    'totalTickets' => (int) $totalTickets,
+                    'statusActive' => $statusActive,
+                    'statusPending' => $statusPending,
+                    'statusClosed' => $statusClosed,
                 ],
-                'events' => $formattedEvents
+                'topEvent' => $topEvent,
+                'latestApproval' => $latestApproval,
+                'events' => $formattedEvents->values() // เรียง array ใหม่ให้สวยงาม
             ], 200);
 
         } catch (\Exception $e) {
@@ -365,8 +385,8 @@ class EventController extends Controller
     public function getPublicEvents(Request $request)
     {
         try {
-            // 🚨 แก้ตรงนี้: เอาคำว่า 'กำลังเตรียม' ออกจาก Array เพื่อไม่ให้ลูกค้าเห็นงานที่ยังไม่อนุมัติ
-            $allowedStatuses = ['On Sale', 'Selling', 'กำลังจะจัด', 'เปิดขายบัตร', 'เปิดขาย', 'UPCOMING', 'บัตรขายหมด'];
+            // ดึงข้อมูลทั้งหมดที่ "อนุมัติแล้ว หรือสูงกว่านั้น"
+            $allowedStatuses = ['On Sale', 'Selling', 'กำลังจะจัด', 'เปิดขายบัตร', 'เปิดขาย', 'UPCOMING', 'บัตรขายหมด', 'ปิดการขาย', 'กำลังจัด'];
             
             $query = Event::with(['hall', 'event_date_times', 'ticket_zones'])
                           ->whereIn('eventStatus', $allowedStatuses);
@@ -376,7 +396,6 @@ class EventController extends Controller
                 $slug = $request->category;
                 $mappedVenue = '';
                 
-                // ดักจับคำเพื่อแปลงเป็นสถานที่ (อ้างอิงจาก Navbar ของคุณ)
                 if ($slug === 'concert-fanmeet' || $slug === 'concert' || $slug === 'fanmeet') {
                     $mappedVenue = 'อิมแพ็ค';
                 } elseif ($slug === 'theater') {
@@ -385,7 +404,6 @@ class EventController extends Controller
                     $mappedVenue = 'ศาลาดนตรีสุริยเทพ';
                 }
 
-                // ถ้าแปลคำสำเร็จ ให้สั่ง Database ไปค้นหาจากตาราง halls
                 if ($mappedVenue !== '') {
                     $query->whereHas('hall', function($q) use ($mappedVenue) {
                         $q->where('Hall_Name', 'like', '%' . $mappedVenue . '%');
@@ -393,7 +411,6 @@ class EventController extends Controller
                 }
             }
 
-            // 🌟 2. กรองตามสถานที่ (ถ้ามีการค้นหา venue มาตรงๆ)
             if ($request->has('venue')) {
                 $venueName = $request->venue;
                 $query->whereHas('hall', function($q) use ($venueName) {
@@ -401,38 +418,14 @@ class EventController extends Controller
                 });
             }
 
-
             if ($request->has('search')) { 
                 $query->where('eventName', 'like', '%' . $request->search . '%'); 
             }
             
             $events = $query->orderBy('created_at', 'desc')->get();
 
-            $now = Carbon::now();
-
-            $events->transform(function ($event) use ($now) {
-                // คำนวณสถานะเวลา
-                $firstRound = $event->event_date_times->sortBy('Sale_startDT')->first();
-
-                if ($firstRound && $firstRound->Sale_startDT) {
-                    $saleStart = Carbon::parse($firstRound->Sale_startDT);
-                    $saleEnd = $firstRound->Sale_endDT ? Carbon::parse($firstRound->Sale_endDT) : null;
-
-                    if ($now->lessThan($saleStart)) {
-                        $event->eventStatus = 'กำลังจะจัด';
-                    } elseif ($now->greaterThanOrEqualTo($saleStart) && (!$saleEnd || $now->lessThanOrEqualTo($saleEnd))) {
-                        $event->eventStatus = 'เปิดขาย';
-                    } elseif ($saleEnd && $now->greaterThan($saleEnd)) {
-                        $event->eventStatus = 'ปิดการขาย';
-                    }
-                }
-                
-                $totalCapacity = $event->ticket_zones->sum('totalSeat');
-                $remainCapacity = $event->ticket_zones->sum('remainSeat');
-                if ($totalCapacity > 0 && $remainCapacity == 0) {
-                    $event->eventStatus = 'บัตรขายหมด';
-                }
-
+            $events->transform(function ($event) {
+                $event->eventStatus = $event->calculated_status;
                 return $event;
             });
             
@@ -478,5 +471,115 @@ class EventController extends Controller
         }
         return $seats;
     }
-    
+
+    // =================================================================
+    // Helper: แปลงไฟล์ Base64 กลับเป็นรูปภาพแล้วเซฟลง Storage
+    // =================================================================
+    private function saveBase64Image($base64Image, $folder)
+    {
+        try {
+            $image_parts = explode(";base64,", $base64Image);
+            $image_type_aux = explode("image/", $image_parts[0]);
+            $image_type = $image_type_aux[1];
+            $image_base64 = base64_decode($image_parts[1]);
+            
+            $fileName = uniqid() . '_' . time() . '.' . $image_type;
+            $filePath = $folder . '/' . $fileName;
+            
+            Storage::disk('public')->put($filePath, $image_base64);
+            
+            return $filePath;
+        } catch (\Exception $e) {
+            Log::error("Base64 Image Save Error: " . $e->getMessage());
+            return null;
+        }
+    }
+
+    // =================================================================
+    // 8. ฟังก์ชัน "อัปเดตอีเวนต์" (Update Event)
+    // =================================================================
+    public function update(Request $request, $id)
+    {
+        DB::beginTransaction();
+        try {
+            // ใช้ where('Event_id', $id) แทน find() เพื่อให้ชัวร์ว่าอ้างอิง Primary Key ถูกต้อง
+           $event = Event::where('Event_id', $id)->first();
+
+            if (!$event) {
+                return response()->json(['message' => 'ไม่พบข้อมูลอีเวนต์'], 404);
+            }
+
+            // ✅ ดักเช็คสิทธิ์: ถ้าคนที่ Login ไม่ใช่เจ้าของงาน ให้เด้งออกทันที (HTTP 403 Forbidden)
+            if ($event->Org_id !== auth()->id()) {
+                return response()->json(['message' => 'ไม่มีสิทธิ์แก้ไขอีเวนต์นี้'], 403);
+            }
+            
+            // 1. อัปเดตข้อมูลหลักของงาน
+            if ($request->has('eventName')) {
+                $event->eventName = $request->eventName;
+            }
+
+            if ($request->has('eventDescription')) {
+                // สำคัญ: ป้องกันไม่ให้ผังที่นั่ง (GRID_DATA) หายไปตอนอัปเดต Description
+                $oldDesc = $event->eventDescription;
+                $gridData = '';
+                if (str_contains($oldDesc, '||GRID_DATA||')) {
+                    $parts = explode('||GRID_DATA||', $oldDesc);
+                    $gridData = '||GRID_DATA||' . ($parts[1] ?? '');
+                }
+                $event->eventDescription = $request->eventDescription . $gridData;
+            }
+
+            if ($request->has('eventStatus')) {
+                $event->eventStatus = $request->eventStatus;
+            }
+
+            // จัดการอัปเดตโปสเตอร์
+            if ($request->has('posterImage') && str_starts_with($request->posterImage, 'data:image')) {
+                $event->bannerImage = $this->saveBase64Image($request->posterImage, 'events');
+            }
+
+            $event->save();
+
+            // 2. อัปเดตรอบการแสดง (ถ้ามีการส่งข้อมูลมา)
+            if ($request->has('show_rounds')) {
+                foreach ($request->show_rounds as $round) {
+                    EventDateTime::where('Event_id', $id)
+                        ->where('roundNumber', $round['roundNumber'])
+                        ->update([
+                            'startDT' => $round['startDT'],
+                            'endDT' => $round['endDT'],
+                            'Sale_startDT' => $round['saleStart'],
+                            'Sale_endDT' => $round['saleEnd'] ?? null
+                        ]);
+                }
+            }
+
+            // 3. อัปเดตราคาตั๋วในแต่ละโซน
+            if ($request->has('tickets')) {
+                foreach ($request->tickets as $t) {
+                    $zoneName = strtoupper(trim($t['zoneName']));
+                    
+                    TicketZone::where('Event_id', $id)
+                        ->where('zoneName', $zoneName)
+                        ->update([
+                            // อัปเดตแค่ราคา (priceperTick) ไปก่อน 
+                            // เพื่อความปลอดภัยของข้อมูลที่นั่ง (Seat) ที่อาจจะถูกจองไปแล้ว
+                            'priceperTick' => $t['price']
+                        ]);
+                }
+            }
+
+            DB::commit();
+            return response()->json([
+                'message' => 'บันทึกการแก้ไขเรียบร้อยแล้ว!',
+                'event' => $event
+            ], 200);
+
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error("Update Event Error: " . $e->getMessage());
+            return response()->json(['message' => 'เกิดข้อผิดพลาด: ' . $e->getMessage()], 500);
+        }
+    }
 }

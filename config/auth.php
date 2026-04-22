@@ -40,6 +40,16 @@ return [
             'driver' => 'session',
             'provider' => 'users',
         ],
+        // ✅ เพิ่ม Guard สำหรับ sanctum ของ members
+        'member' => [
+            'driver' => 'sanctum',
+            'provider' => 'members',
+        ],
+        // ✅ เพิ่ม Guard สำหรับ sanctum ของ organizers
+        'organizer' => [
+            'driver' => 'sanctum',
+            'provider' => 'organizers',
+        ],
     ],
 
     /*
@@ -65,10 +75,17 @@ return [
             'model' => env('AUTH_MODEL', App\Models\User::class),
         ],
 
-        // 'users' => [
-        //     'driver' => 'database',
-        //     'table' => 'users',
-        // ],
+        // ✅ เพิ่ม Provider ให้ชี้ไปที่ Model Member
+        'members' => [
+            'driver' => 'eloquent',
+            'model' => App\Models\Member::class, 
+        ],
+        
+        // ✅ เพิ่ม Provider ให้ชี้ไปที่ Model Organizer
+        'organizers' => [
+            'driver' => 'eloquent',
+            'model' => App\Models\Organizer::class, 
+        ],
     ],
 
     /*

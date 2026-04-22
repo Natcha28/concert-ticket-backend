@@ -48,4 +48,64 @@ class PaymentController extends Controller
             'data'    => $payment
         ], 201);
     }
+
+
+    // =================================================================
+    // 2. ฟังก์ชันของฝั่งผู้จัดงาน (Organizer) -> สร้าง QR Code เปิดระบบ
+    // =================================================================
+    public function generatePromptPay(Request $request)
+    {
+        // รับยอดเงินที่ส่งมาจาก Frontend (หน้า React)
+        $amount = $request->input('amount', 1500);
+        
+        // 🛑 เปลี่ยนเบอร์นี้เป็นเบอร์โทรศัพท์ (หรือเลขบัตร ปชช) ที่ผูก PromptPay ของคุณ
+        $promptpayNumber = "0812345678"; 
+
+        // ใช้ API ฟรีในการสร้างรูปรหัส QR Code 
+        $qrCodeUrl = "https://promptpay.io/{$promptpayNumber}/{$amount}.png";
+
+        return response()->json([
+            'success' => true,
+            'qr_code' => $qrCodeUrl,
+            'message' => 'สร้าง QR Code สำเร็จ'
+        ]);
+    }
+
+    // =================================================================
+    // 3. ฟังก์ชันจำลองการชำระเงินเปิดระบบ (อัปเดตสถานะงาน)
+    // =================================================================
+    public function publishPayment(Request $request, $id)
+    {
+        // 1. ค้นหางานคอนเสิร์ต
+        $event = \App\Models\Event::with('event_date_times')->where('Event_id', $id)->first();
+        
+        if (!$event) {
+            return response()->json(['message' => 'ไม่พบข้อมูลอีเวนต์'], 404);
+        }
+
+        // 2. คำนวณสถานะใหม่ โดยอิงจากวันที่ปัจจุบัน เทียบกับ วันเปิดขายบัตร
+        $now = Carbon::now();
+        $newStatus = 'กำลังจะจัด'; // ค่าเริ่มต้นถ้ายังไม่ถึงวันขาย
+
+        $firstRound = $event->event_date_times->sortBy('Sale_startDT')->first();
+        if ($firstRound && $firstRound->Sale_startDT) {
+            $saleStart = Carbon::parse($firstRound->Sale_startDT);
+            // ถัาวินาทีที่กดจ่ายเงิน ดันเป็นเวลาที่ถึงกำหนดขายบัตรพอดี ก็ให้เป็น "เปิดขาย" เลย
+            if ($now->greaterThanOrEqualTo($saleStart)) {
+                $newStatus = 'เปิดขาย'; 
+            }
+        }
+
+        // 3. อัปเดตข้อมูลลง Database
+        $event->update([
+            'eventStatus' => $newStatus
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'ชำระเงินและเปิดระบบสำเร็จ',
+            'newStatus' => $newStatus
+        ]);
+    }
+
 }
