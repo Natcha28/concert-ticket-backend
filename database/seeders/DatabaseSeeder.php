@@ -34,7 +34,7 @@ class DatabaseSeeder extends Seeder
         
         $hall2 = Hall::updateOrCreate(
             ['Hall_id' => 2],
-            ['Hall_Name' => 'Prince Mahidol Hall', 'Address' => 'Nakhon Pathom', 'totalCapacity' => 2000]
+            ['Hall_Name' => 'ศาลาดนตรีสุริยเทพ มหาวิทยาลัยรังสิต', 'Address' => 'Pathum Thani', 'totalCapacity' => 2000]
         );
 
         $hall3 = Hall::updateOrCreate(

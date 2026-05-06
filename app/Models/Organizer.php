@@ -26,7 +26,9 @@ class Organizer extends Authenticatable
         'emailOG', 
         'passwordOG', 
         'telOG',
-        'registerdateOG'
+        'registerdateOG',
+        'bank_name',     
+        'bank_account'
     ];
 
     // ✅ ซ่อนรหัสผ่านไม่ให้แสดงผลออกมาตอนดึงข้อมูล (เพื่อความปลอดภัย)

@@ -157,11 +157,19 @@ class OrganizerAuthController extends Controller
             'firstnameOG' => 'required|string',
             'lastnameOG'  => 'nullable|string',
             'telOG'       => 'required|string',
-            // 'bio'      => 'nullable|string', // ถ้าใน DB มี column bio ให้เปิดบรรทัดนี้
+            'bank_name'   => 'nullable|string',
+            'bank_account'=> 'nullable|string',
         ]);
 
         // อัปเดตลง Database
-        $organizer->update($validated);
+        $organizer->update([
+            'compName' => $request->compName,
+            'firstnameOG' => $request->firstnameOG,
+            'lastnameOG' => $request->lastnameOG,
+            'telOG' => $request->telOG,
+            'bank_name' => $request->bank_name,
+            'bank_account' => $request->bank_account,
+        ]);
 
         return response()->json([
             'message' => 'บันทึกข้อมูลสำเร็จ!',

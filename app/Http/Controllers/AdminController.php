@@ -242,23 +242,38 @@ class AdminController extends Controller
     // =================================================================
     // ดึงข้อมูลสำหรับหน้า Admin Dashboard
     // =================================================================
-    public function getDashboardStats()
+    public function getDashboardStats(Request $request)
     {
         try {
-            $totalRevenue = \Illuminate\Support\Facades\DB::table('bookings')
-                ->where('BKStatus', 'ชำระเงินแล้ว')
-                ->sum('totalPrice');
+            $filter = $request->query('filter', 'วันนี้');
+            $startDate = null;
 
-            $totalTicketsSold = \Illuminate\Support\Facades\DB::table('bookings')
-                ->where('BKStatus', 'ชำระเงินแล้ว')
-                ->sum('quantity');
+            if ($filter === 'วันนี้') {
+                $startDate = Carbon::today('Asia/Bangkok')->startOfDay();
+            } elseif ($filter === '7 วันล่าสุด') {
+                $startDate = Carbon::today('Asia/Bangkok')->subDays(7)->startOfDay();
+            } elseif ($filter === 'เดือนนี้') {
+                $startDate = Carbon::now('Asia/Bangkok')->startOfMonth();
+            } elseif ($filter === 'ปีนี้') {
+                $startDate = Carbon::now('Asia/Bangkok')->startOfYear();
+            }
+
+            $revenueQuery = \Illuminate\Support\Facades\DB::table('bookings')->where('BKStatus', 'ชำระเงินแล้ว');
+            if ($startDate) $revenueQuery->where('BKDate', '>=', $startDate);
+            $totalRevenue = $revenueQuery->sum('totalPrice');
+
+            $ticketQuery = \Illuminate\Support\Facades\DB::table('bookings')->where('BKStatus', 'ชำระเงินแล้ว');
+            if ($startDate) $ticketQuery->where('BKDate', '>=', $startDate);
+            $totalTicketsSold = $ticketQuery->sum('quantity');
             $platformRevenue = $totalTicketsSold * 20;
 
-            $totalUsers = \Illuminate\Support\Facades\DB::table('members')->count();
+            $usersQuery = \Illuminate\Support\Facades\DB::table('members');
+            if ($startDate) $usersQuery->where('created_at', '>=', $startDate);
+            $totalUsers = $usersQuery->count();
 
-            $completedEvents = \Illuminate\Support\Facades\DB::table('events')
-                ->where('rental_end', '<', now())
-                ->count();
+            $completedQuery = \Illuminate\Support\Facades\DB::table('events')->where('rental_end', '<', now('Asia/Bangkok'));
+            if ($startDate) $completedQuery->where('rental_end', '>=', $startDate);
+            $completedEvents = $completedQuery->count();
 
             $recentOrganizers = \Illuminate\Support\Facades\DB::table('organizers')
                 ->orderBy('Org_id', 'desc')
@@ -273,7 +288,7 @@ class AdminController extends Controller
                 ->get();
 
             $eventsData = \Illuminate\Support\Facades\DB::table('events')
-                ->where('rental_end', '>=', now()) 
+                ->where('rental_end', '>=', now('Asia/Bangkok')) 
                 ->get();
                 
             $topEvents = [];
@@ -284,17 +299,19 @@ class AdminController extends Controller
                     ->sum('totalSeat');
 
                 if ($totalSeats > 0) {
-                    $soldSeats = \Illuminate\Support\Facades\DB::table('bookings')
+                    $soldSeatsQuery = \Illuminate\Support\Facades\DB::table('bookings')
                         ->join('event_date_times', 'bookings.Datetime_id', '=', 'event_date_times.Datetime_id')
                         ->where('event_date_times.Event_id', $e->Event_id)
-                        ->where('bookings.BKStatus', 'ชำระเงินแล้ว')
-                        ->sum('bookings.quantity');
+                        ->where('bookings.BKStatus', 'ชำระเงินแล้ว');
+                    if ($startDate) $soldSeatsQuery->where('bookings.BKDate', '>=', $startDate);
+                    $soldSeats = $soldSeatsQuery->sum('bookings.quantity');
 
-                    $eventRevenue = \Illuminate\Support\Facades\DB::table('bookings')
+                    $eventRevenueQuery = \Illuminate\Support\Facades\DB::table('bookings')
                         ->join('event_date_times', 'bookings.Datetime_id', '=', 'event_date_times.Datetime_id')
                         ->where('event_date_times.Event_id', $e->Event_id)
-                        ->where('bookings.BKStatus', 'ชำระเงินแล้ว')
-                        ->sum('bookings.totalPrice');
+                        ->where('bookings.BKStatus', 'ชำระเงินแล้ว');
+                    if ($startDate) $eventRevenueQuery->where('bookings.BKDate', '>=', $startDate);
+                    $eventRevenue = $eventRevenueQuery->sum('bookings.totalPrice');
 
                     $topEvents[] = [
                         'id' => $e->Event_id,
@@ -307,7 +324,7 @@ class AdminController extends Controller
                 }
             }
 
-            $todayStr = Carbon::today()->toDateString(); 
+            $todayStr = Carbon::now('Asia/Bangkok')->toDateString(); 
             
             $todayEventsData = \Illuminate\Support\Facades\DB::table('events')
                 ->join('event_date_times', 'events.Event_id', '=', 'event_date_times.Event_id')
@@ -355,17 +372,19 @@ class AdminController extends Controller
                         $seats = \Illuminate\Support\Facades\DB::table('ticket_zones')->where('Event_id', $evt->Event_id)->sum('totalSeat');
                         $totalOrgSeats += $seats;
 
-                        $sold = \Illuminate\Support\Facades\DB::table('bookings')
+                        $soldQuery = \Illuminate\Support\Facades\DB::table('bookings')
                             ->join('event_date_times', 'bookings.Datetime_id', '=', 'event_date_times.Datetime_id')
                             ->where('event_date_times.Event_id', $evt->Event_id)
-                            ->where('bookings.BKStatus', 'ชำระเงินแล้ว')
-                            ->sum('bookings.quantity');
+                            ->where('bookings.BKStatus', 'ชำระเงินแล้ว');
+                        if ($startDate) $soldQuery->where('bookings.BKDate', '>=', $startDate);
+                        $sold = $soldQuery->sum('bookings.quantity');
                             
-                        $rev = \Illuminate\Support\Facades\DB::table('bookings')
+                        $revQuery = \Illuminate\Support\Facades\DB::table('bookings')
                             ->join('event_date_times', 'bookings.Datetime_id', '=', 'event_date_times.Datetime_id')
                             ->where('event_date_times.Event_id', $evt->Event_id)
-                            ->where('bookings.BKStatus', 'ชำระเงินแล้ว')
-                            ->sum('bookings.totalPrice');
+                            ->where('bookings.BKStatus', 'ชำระเงินแล้ว');
+                        if ($startDate) $revQuery->where('bookings.BKDate', '>=', $startDate);
+                        $rev = $revQuery->sum('bookings.totalPrice');
 
                         $totalOrgSold += $sold;
                         $totalOrgRevenue += $rev;
@@ -404,7 +423,7 @@ class AdminController extends Controller
             $topOrganizers = array_slice($topOrganizers, 0, 3);
 
             $completedEventsData = \Illuminate\Support\Facades\DB::table('events')
-                ->where('rental_end', '<', now()) 
+                ->where('rental_end', '<', now('Asia/Bangkok')) 
                 ->orderBy('rental_end', 'desc') 
                 ->get();
                 
@@ -416,17 +435,19 @@ class AdminController extends Controller
                     ->sum('totalSeat');
 
                 if ($totalSeats > 0) {
-                    $soldSeats = \Illuminate\Support\Facades\DB::table('bookings')
+                    $soldSeatsQuery = \Illuminate\Support\Facades\DB::table('bookings')
                         ->join('event_date_times', 'bookings.Datetime_id', '=', 'event_date_times.Datetime_id')
                         ->where('event_date_times.Event_id', $e->Event_id)
-                        ->where('bookings.BKStatus', 'ชำระเงินแล้ว')
-                        ->sum('bookings.quantity');
+                        ->where('bookings.BKStatus', 'ชำระเงินแล้ว');
+                    if ($startDate) $soldSeatsQuery->where('bookings.BKDate', '>=', $startDate);
+                    $soldSeats = $soldSeatsQuery->sum('bookings.quantity');
 
-                    $eventRevenue = \Illuminate\Support\Facades\DB::table('bookings')
+                    $eventRevenueQuery = \Illuminate\Support\Facades\DB::table('bookings')
                         ->join('event_date_times', 'bookings.Datetime_id', '=', 'event_date_times.Datetime_id')
                         ->where('event_date_times.Event_id', $e->Event_id)
-                        ->where('bookings.BKStatus', 'ชำระเงินแล้ว')
-                        ->sum('bookings.totalPrice');
+                        ->where('bookings.BKStatus', 'ชำระเงินแล้ว');
+                    if ($startDate) $eventRevenueQuery->where('bookings.BKDate', '>=', $startDate);
+                    $eventRevenue = $eventRevenueQuery->sum('bookings.totalPrice');
 
                     $completedEventsList[] = [
                         'id' => $e->Event_id,
@@ -497,43 +518,6 @@ class AdminController extends Controller
             
         } catch (\Exception $e) {
             return response()->json(['error' => 'getOrders Error: ' . $e->getMessage()], 500);
-        }
-    }
-
-    // ==========================================
-    // ดึงรายการเบิกจ่ายเงินให้ผู้จัด (สำหรับหน้าธุรกรรมการเงิน)
-    // ==========================================
-    public function getPayouts()
-    {
-        try {
-            $payouts = \Illuminate\Support\Facades\DB::table('events')
-                ->join('organizers', 'events.Org_id', '=', 'organizers.Org_id')
-                ->select(
-                    'events.Event_id as id',
-                    'organizers.firstnameOG', 
-                    'organizers.lastnameOG',
-                    'events.eventName as event',
-                    'events.rental_end as date'
-                )
-                ->where('events.eventStatus', 'สิ้นสุดแล้ว')
-                ->get();
-
-            $formattedPayouts = $payouts->map(function ($item) {
-                return [
-                    'id' => $item->id,
-                    'organizer' => trim(($item->firstnameOG ?? '') . ' ' . ($item->lastnameOG ?? '')), 
-                    'event' => $item->event,
-                    'amount' => 1500000, 
-                    'bank' => 'KBANK •••• 8829',
-                    'date' => !empty($item->date) ? \Carbon\Carbon::parse($item->date)->format('d/m/Y H:i') : '-',
-                    'status' => 'Pending'
-                ];
-            });
-
-            return response()->json($formattedPayouts);
-            
-        } catch (\Exception $e) {
-            return response()->json(['error' => 'getPayouts Error: ' . $e->getMessage()], 500);
         }
     }
 
@@ -736,19 +720,17 @@ class AdminController extends Controller
                     ->where('BKStatus', 'ชำระเงินแล้ว')
                     ->sum('quantity');
 
-                // 2. หารายได้ของโซนนี้จากตาราง bookings โดยตรง (ชัวร์ 100%)
+                // 2. หารายได้ของโซนนี้จากตาราง bookings โดยตรง
                 $revenueInZone = DB::table('bookings')
                     ->where('Zone_id', $zone->Zone_id)
                     ->where('BKStatus', 'ชำระเงินแล้ว')
                     ->sum('totalPrice');
 
-                // ดักจับชื่อคอลัมน์ความจุ (Capacity)
+                // ดักจับชื่อคอลัมน์
                 $capacity = $zone->totalSeat ?? $zone->TotalSeat ?? $zone->total_seat ?? $zone->capacity ?? 0;
-                
-                // ดักจับชื่อคอลัมน์ชื่อโซน
                 $zoneName = $zone->zoneName ?? $zone->ZoneName ?? $zone->zone_name ?? 'Zone';
 
-                // 3. คำนวณราคาต่อใบ (ถ้าระบบดึงจาก DB ไม่ได้ ให้เอารายได้รวม หารด้วย จำนวนใบซะเลย)
+                // 3. คำนวณราคาต่อใบ
                 $dbPrice = $zone->ticketPrice ?? $zone->TicketPrice ?? $zone->ticket_price ?? $zone->price ?? $zone->Price ?? 0;
                 $price = $dbPrice > 0 ? $dbPrice : ($soldInZone > 0 ? $revenueInZone / $soldInZone : 0);
 
@@ -766,6 +748,79 @@ class AdminController extends Controller
                 'zones' => $zoneData,
                 'total_revenue' => $zoneData->sum('revenue')
             ]);
+        } catch (\Exception $e) {
+            return response()->json(['error' => $e->getMessage()], 500);
+        }
+    }
+
+    // ==========================================
+    // ✅ ดึงรายการเบิกจ่ายเงินให้ผู้จัด (Payouts) อิงจากเวลา endDT และดึงข้อมูลบัญชีธนาคาร
+    // ==========================================
+    public function getPayouts()
+    {
+        try {
+            // 1. ดึงข้อมูลอีเวนต์และเวลาจากตาราง event_date_times 
+            // พร้อมเลือก (Select) คอลัมน์ที่ต้องการจากตาราง organizers ด้วย
+            $events = DB::table('events')
+                ->join('organizers', 'events.Org_id', '=', 'organizers.Org_id')
+                ->join('event_date_times', 'events.Event_id', '=', 'event_date_times.Event_id')
+                // เช็คว่าเวลาจบงาน (endDT) ผ่านไปแล้วหรือยัง
+                ->where('event_date_times.endDT', '<', \Carbon\Carbon::now('Asia/Bangkok'))
+                ->select(
+                    'events.*', 
+                    'event_date_times.*',
+                    'organizers.compName',
+                    'organizers.firstnameOG',
+                    'organizers.lastnameOG',
+                    'organizers.bank_name',    // ✅ ดึงชื่อธนาคารจาก DB
+                    'organizers.bank_account'  // ✅ ดึงเลขบัญชีจาก DB
+                )
+                ->get();
+
+            $formattedPayouts = $events->map(function ($item) {
+                // จัดการชื่อบริษัท/ผู้จัด
+                $organizerName = !empty($item->compName) 
+                    ? $item->compName 
+                    : trim(($item->firstnameOG ?? '') . ' ' . ($item->lastnameOG ?? ''));
+
+                // 2. ดึงข้อมูลจาก event_payments เพื่อดูว่ามีประวัติการโอนหรือยัง
+                $payment = DB::table('event_payments')
+                    ->where('Event_id', $item->Event_id)
+                    ->first();
+
+                // 3. กำหนดสถานะ: ถ้ามีข้อมูลว่าชำระแล้วให้เป็น Completed นอกนั้นคือ Pending
+                $status = 'Pending';
+                if ($payment && ($payment->payStatus === 'ชำระเรียบร้อยแล้ว' || $payment->payStatus === 'Completed')) {
+                    $status = 'Completed';
+                }
+
+                // 4. คำนวณยอดเงิน
+                $amountToPay = 0;
+                if ($payment && $payment->eventAmount > 0) {
+                    $amountToPay = $payment->eventAmount;
+                } else {
+                    $amountToPay = DB::table('bookings')
+                        ->where('Datetime_id', $item->Datetime_id) // อิงตามรอบการแสดง
+                        ->where('BKStatus', 'ชำระเงินแล้ว')
+                        ->sum('totalPrice');
+                }
+
+                return [
+                    "id" => $item->Event_id, 
+                    "organizer" => $organizerName,
+                    "event" => $item->eventName,
+                    "amount" => $amountToPay, 
+                    "bank_name" => $item->bank_name,       // ✅ ส่งออกไปให้ Frontend
+                    "bank_account" => $item->bank_account, // ✅ ส่งออกไปให้ Frontend
+                    "date" => !empty($item->endDT) ? \Carbon\Carbon::parse($item->endDT)->format('Y-m-d') : '-',
+                    "status" => $status 
+                ];
+            });
+
+            // ป้องกันข้อมูลซ้ำซ้อนกรณีอีเวนต์เดียวมีหลายรอบ (Group by Event_id)
+            $uniquePayouts = collect($formattedPayouts)->unique('id')->values()->all();
+
+            return response()->json($uniquePayouts);
         } catch (\Exception $e) {
             return response()->json(['error' => $e->getMessage()], 500);
         }

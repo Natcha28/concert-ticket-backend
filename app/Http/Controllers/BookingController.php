@@ -90,11 +90,18 @@ class BookingController extends Controller
             $seatIds = $request->seat_ids;
             $ticketQty = count($seatIds);
             
-            
             $userId = Auth::id() ?? 1;
 
+            // 🚨 1. แก้ไขให้ค้นหาที่นั่งได้ทั้งแบบเลข ID และแบบตัวหนังสือ (เช่น F11)
             $availableSeats = DB::table('seats')
-                ->whereIn('Seat_id', $seatIds)
+                ->where('Zone_id', $request->Zone_id)
+                ->where(function($query) use ($seatIds) {
+                    if (isset($seatIds[0]) && is_numeric($seatIds[0])) {
+                        $query->whereIn('Seat_id', $seatIds); 
+                    } else {
+                        $query->whereIn(DB::raw("CONCAT(\"SeatRow\", \"SeatNo\")"), $seatIds);
+                    }
+                })
                 ->where('SeatStatus', 'ว่าง')
                 ->lockForUpdate() 
                 ->get();
@@ -105,27 +112,29 @@ class BookingController extends Controller
                 ], 409);
             }
 
-            // ⭐️ ดึงข้อมูลโซน
             $zone = TicketZone::where('Zone_id', $request->Zone_id)
                 ->lockForUpdate()
                 ->first();
                 
-            // ✅ แก้ไข: เพิ่มการเช็ค ถ้าหาโซนไม่เจอให้หยุดทำงานและบอก Error
             if (!$zone) {
-                return response()->json([
-                    'message' => 'ไม่พบข้อมูลโซนที่นั่ง ID: ' . $request->Zone_id
-                ], 404);
+                return response()->json(['message' => 'ไม่พบข้อมูลโซนที่นั่ง'], 404);
             }
 
-            // ตอนนี้มั่นใจได้แล้วว่า $zone ไม่เป็น null แน่นอน
+            if ($zone->remainSeat < $ticketQty) {
+                return response()->json(['message' => 'ขออภัย ที่นั่งในโซนนี้เต็มแล้ว หรือมีจำนวนไม่พอต่อการจอง'], 400); 
+            }
+
             $ticketPrice = $zone->priceperTick; 
             $totalPrice = $ticketPrice * $ticketQty;
 
-            // อัปเดตสถานะที่นั่ง
+            // สกัดเอา ID ตัวเลขแท้ๆ ออกมาใช้บันทึกลงฐานข้อมูล
+            $trueSeatIds = $availableSeats->pluck('Seat_id')->toArray();
+
+            // 🚨 2. เปลี่ยนสถานะเป็น 'จองแล้ว' เพื่อให้หน้าเว็บเปลี่ยนเป็นสีแดงทันที
             DB::table('seats')
-                ->whereIn('Seat_id', $seatIds)
+                ->whereIn('Seat_id', $trueSeatIds)
                 ->update([
-                    'SeatStatus' => 'รอชำระเงิน', 
+                    'SeatStatus' => 'จองแล้ว', 
                     'updated_at' => now() 
                 ]);
 
@@ -139,10 +148,10 @@ class BookingController extends Controller
                 'BKStatus'    => 'รอการชำระเงิน' 
             ]);
 
-            foreach ($seatIds as $seatId) {
+            foreach ($trueSeatIds as $trueSeatId) {
                 BookingDetail::create([
                     'Booking_id' => $booking->Booking_id, 
-                    'Seat_id' => $seatId,
+                    'Seat_id' => $trueSeatId,
                     'Price_Per_Ticket' => $ticketPrice,   
                     'ETStatus' => 'รอชำระเงิน',  
                 ]);

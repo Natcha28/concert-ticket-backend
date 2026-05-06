@@ -6,6 +6,7 @@ use Illuminate\Http\Request;
 use App\Models\EventPayment;
 use App\Models\Event;
 use App\Models\Organizer; // อย่าลืม import Model นี้
+use Illuminate\Support\Facades\DB;
 
 class AdminEventController extends Controller
 {
@@ -235,7 +236,8 @@ class AdminEventController extends Controller
                 $frontendStatus = 'pending'; // ค่าเริ่มต้น
                 if (in_array($dbStatus, ['กำลังจะจัด', 'เปิดขายบัตร', 'รอชำระเงิน' ,'เปิดขาย', 'UPCOMING', 'Selling', 'On Sale', 'บัตรขายหมด'])) {
                     $frontendStatus = 'approved';
-                } elseif (in_array($dbStatus, ['ยกเลิก', 'ยกเลิกงาน'])) {
+                // ✅ แก้ไขตรงนี้: เพิ่มคำว่า 'cancelled' เข้าไปใน in_array ให้ตรงกับฐานข้อมูล
+                } elseif (in_array($dbStatus, ['ยกเลิก', 'ยกเลิกงาน', 'cancelled'])) {
                     $frontendStatus = 'cancelled';
                 }
 
@@ -256,6 +258,10 @@ class AdminEventController extends Controller
                     'paymentStatus' => 'paid',
                     'publishDate' => $e->created_at ? \Carbon\Carbon::parse($e->created_at)->format('d M Y') : 'ไม่ระบุ',
                     'saleStartDate' => ($dt && $dt->Sale_startDT) ? \Carbon\Carbon::parse($dt->Sale_startDT)->format('d M Y, H:i') : '',
+                    
+                    // ✅ เพิ่มบรรทัดนี้ เพื่อส่ง Sale_endDT ออกไปให้ Frontend
+                    'saleEndDate' => ($dt && $dt->Sale_endDT) ? \Carbon\Carbon::parse($dt->Sale_endDT)->format('d M Y, H:i') : '', 
+
                     'depositAmount' => '0',
                     'tickets' => $ticketArr
                 ];
@@ -272,37 +278,112 @@ class AdminEventController extends Controller
     }
 
 
-     public function updateStatus(Request $request, $id)
-{
-    // ใช้ Event_id ตามโครงสร้างโต๊ะของคุณ (ถ้า Model ตั้งค่า primaryKey ไว้แล้วใช้ find ได้เลย)
-    $event = \App\Models\Event::where('Event_id', $id)->firstOrFail();
+    public function updateStatus(Request $request, $id)
+    {
+        // ใช้ Event_id ตามโครงสร้างโต๊ะของคุณ (ถ้า Model ตั้งค่า primaryKey ไว้แล้วใช้ find ได้เลย)
+        $event = \App\Models\Event::where('Event_id', $id)->firstOrFail();
 
-    $status = $request->approvalStatus;
-    $dbStatus = $status; // ค่าเริ่มต้น
+        $status = $request->approvalStatus;
+        $dbStatus = $status; // ค่าเริ่มต้น
 
-    // แปลงจากค่าที่ React ส่งมา เป็นค่าที่ DB เข้าใจ
-    if ($status === 'approved') {
-        $dbStatus = 'รอชำระเงิน'; 
-    } elseif ($status === 'rejected') {
-        $dbStatus = 'ไม่อนุมัติ';
-    } elseif ($status === 'changes_requested') {
-        $dbStatus = 'รอแก้ไข';
+        // แปลงจากค่าที่ React ส่งมา เป็นค่าที่ DB เข้าใจ
+        if ($status === 'approved') {
+            $dbStatus = 'รอชำระเงิน'; 
+        } elseif ($status === 'rejected') {
+            $dbStatus = 'ไม่อนุมัติ';
+        } elseif ($status === 'changes_requested') {
+            $dbStatus = 'รอแก้ไข';
+        // ✅ แก้ไขตรงนี้เผื่อไว้: ถ้ากดยกเลิกจาก React ให้ส่งค่า cancelled ลง DB ให้ตรงกัน
+        } elseif ($status === 'cancelled') {
+            $dbStatus = 'cancelled';
+        }
+
+        // 🌟 ป้องกันการกลับไปรอชำระเงินอีกรอบ ถ้ายืนยันว่าจ่ายไปแล้ว
+        $hasPaid = \Illuminate\Support\Facades\DB::table('event_payments')
+            ->where('Event_id', $id)
+            ->where('payStatus', 'ชำระเรียบร้อยแล้ว')
+            ->exists();
+
+        if ($hasPaid && $dbStatus === 'รอชำระเงิน') {
+            $dbStatus = 'กำลังจะจัด'; // ข้ามขั้นไปเลย
+        }
+
+        $event->update([
+            // เปลี่ยนชื่อคอลัมน์ให้ตรงกับ DB ของคุณ (สมมติว่าใช้ eventStatus)
+            'eventStatus' => $dbStatus, 
+            'adminFeedback' => $request->adminFeedback
+        ]);
+
+        return response()->json([
+            'message' => 'อัปเดตสถานะเป็น ' . $dbStatus . ' เรียบร้อยแล้ว',
+            'event' => $event
+        ]);
     }
+    
+    
+    public function getEventDetail($id)
+    {
+        try {
+            // 1. ดึงข้อมูล Event หลัก พร้อม Join ข้อมูลผู้จัดและสถานที่
+            $event = DB::table('events')
+                ->leftJoin('organizers', 'events.Org_id', '=', 'organizers.Org_id')
+                ->leftJoin('halls', 'events.Hall_id', '=', 'halls.Hall_id')
+                ->where('events.Event_id', $id)
+                ->first();
 
-    $event->update([
-        // เปลี่ยนชื่อคอลัมน์ให้ตรงกับ DB ของคุณ (สมมติว่าใช้ eventStatus)
-        'eventStatus' => $dbStatus, 
-        'adminFeedback' => $request->adminFeedback
-    ]);
+            if (!$event) {
+                return response()->json(['message' => 'ไม่พบข้อมูลอีเวนต์'], 404);
+            }
 
-    return response()->json([
-        'message' => 'อัปเดตสถานะเป็น ' . $dbStatus . ' เรียบร้อยแล้ว',
-        'event' => $event
-    ]);
+            // 2. ดึงรอบการแสดงแรกสุดเพื่อเอาวันที่และเวลา
+            $eventDate = DB::table('event_date_times')
+                ->where('Event_id', $id)
+                ->orderBy('startDT', 'asc')
+                ->first();
+
+            // 3. คำนวณข้อมูลการขายตั๋วจากตาราง ticket_zones
+            $ticketZones = DB::table('ticket_zones')
+                ->where('Event_id', $id)
+                ->get();
+
+            $totalTickets = $ticketZones->sum('totalSeat');
+            $remainTickets = $ticketZones->sum('remainSeat');
+            $soldTickets = $totalTickets - $remainTickets;
+
+            // 4. คำนวณรายได้รวมจากตาราง bookings (นับเฉพาะที่ชำระเงินแล้ว)
+            $totalRevenue = DB::table('bookings')
+                ->join('event_date_times', 'bookings.Datetime_id', '=', 'event_date_times.Datetime_id')
+                ->where('event_date_times.Event_id', $id)
+                ->where('bookings.BKStatus', 'ชำระเงินแล้ว')
+                ->sum('bookings.totalPrice');
+
+            // 5. ส่ง Response กลับไปในรูปแบบที่ Next.js ของคุณรอรับอยู่
+            return response()->json([
+                'event' => [
+                    'id' => $event->Event_id,
+                    'name' => $event->eventName,
+                    'date' => $eventDate ? $eventDate->startDT : ($event->rental_start ?? '-'),
+                    'location' => $event->Hall_Name ?? ('Hall ID: ' . $event->Hall_id),
+                    'description' => $event->eventDescription,
+                    'status' => $event->eventStatus,
+                    // ✅ แก้ตรงนี้เพื่อให้รูปขึ้น (ต้องส่งชื่อไฟล์ภาพจาก DB ไป)
+                    'poster_url' => $event->bannerImage ?? null, 
+                ],
+                'organizer' => [
+                    'id' => $event->Org_id,
+                    'name' => trim(($event->firstnameOG ?? '') . ' ' . ($event->lastnameOG ?? '')),
+                    'code' => 'ORG-' . str_pad($event->Org_id, 4, '0', STR_PAD_LEFT),
+                ],
+                'sales' => [
+                    // ✅ ส่งข้อมูลยอดขายจริง
+                    'total_tickets' => (int) $totalTickets,
+                    'sold_tickets' => (int) $soldTickets,
+                    'total_revenue' => (float) $totalRevenue,
+                ]
+            ], 200, [], JSON_UNESCAPED_UNICODE);
+
+        } catch (\Exception $e) {
+            return response()->json(['message' => 'Error: ' . $e->getMessage()], 500);
+        }
+    }
 }
-
-
-
-
-
-    }

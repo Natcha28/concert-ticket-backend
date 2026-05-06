@@ -11,7 +11,7 @@ class TicketZoneController extends Controller
 {
     public function store(Request $request)
     {
-        / 1. รับข้อมูลจากหน้าบ้าน
+        // 1. รับข้อมูลจากหน้าบ้าน
         $validated = $request->validate([
             'Event_id'     => 'required|exists:events,Event_id',
             'HallZone_id'  => 'required|exists:hall_zones,HallZone_id',
@@ -27,8 +27,8 @@ class TicketZoneController extends Controller
             return DB::transaction(function () use ($validated) {
                 $zoneName = strtoupper(trim($validated['zoneName']));
                 
-                // 2. เช็คว่าเป็นโซนของเมืองไทยรัชดาลัยหรือไม่
-                $fixedSeats = $this->getRachadalaiFixedSeats($zoneName);
+                // 2. เช็คว่าเป็นโซนแบบ Fixed ของรัชดาลัย, อิมแพ็ค หรือ ม.รังสิต
+                $fixedSeats = $this->getRachadalaiFixedSeats($zoneName) ?? $this->getDynamicLayoutSeats($zoneName);
                 
                 // 3. คำนวณจำนวนที่นั่งรวม (ถ้าเป็นผัง Fixed ให้นับจาก Array เลย)
                 if ($fixedSeats) {
@@ -53,7 +53,7 @@ class TicketZoneController extends Controller
                 $now = now();
 
                 if ($fixedSeats) {
-                    // 🎯 กรณีเป็นผังรัชดาลัย: สร้างตามรอยแหว่งและเลขที่นั่งจริงเป๊ะๆ
+                    // 🎯 กรณีเป็นผัง Fixed: สร้างตามรอยแหว่งและเลขที่นั่งจริงเป๊ะๆ
                     foreach ($fixedSeats as $seat) {
                         $seatDataToInsert[] = [
                             'Zone_id'    => $ticketZone->Zone_id,
@@ -102,6 +102,325 @@ class TicketZoneController extends Controller
                 'message' => 'เกิดข้อผิดพลาด: ' . $e->getMessage()
             ], 500);
         }
+    }
+
+    /**
+     * ฟังก์ชันสร้างผังเก้าอี้อัจฉริยะสำหรับ อิมแพค อารีน่า และ ม.รังสิต
+     * สร้างจาก Logic หน้า React แบบ 1:1
+     */
+    private function getDynamicLayoutSeats($zoneName)
+    {
+        $name = strtoupper(trim($zoneName));
+        $maxCol = 20;
+        $startNum = 1;
+        $matrix = [];
+        $rowLetters = range('A', 'Z');
+        $isFixedLayout = false;
+
+        // ============================================
+        // 🎯 อิมแพค อารีน่า (IMPACT ARENA)
+        // ============================================
+        if (in_array($name, ["A1", "A2", "A3", "A4"])) {
+            $isFixedLayout = true;
+            $rowLetters = range('A', 'T');
+            $maxCol = 25;
+            $matrix = [['l' => 0, 'r' => 0]];
+        }
+        else if ($name === "A5") {
+            $isFixedLayout = true;
+            $rowLetters = range('A', 'T');
+            $maxCol = 25;
+            for($i=0; $i<15; $i++) $matrix[] = ['l'=>0, 'r'=>0];
+            array_push($matrix, ['l'=>2,'r'=>0], ['l'=>4,'r'=>0], ['l'=>6,'r'=>0], ['l'=>8,'r'=>0], ['l'=>10,'r'=>0]);
+        }
+        else if ($name === "A6") {
+            $isFixedLayout = true;
+            $rowLetters = range('A', 'T');
+            $maxCol = 25;
+            for($i=0; $i<15; $i++) $matrix[] = ['l'=>0, 'r'=>0];
+            array_push($matrix, ['l'=>0,'r'=>2], ['l'=>0,'r'=>4], ['l'=>0,'r'=>6], ['l'=>0,'r'=>8], ['l'=>0,'r'=>10]);
+        }
+        else if ($name === "A7") {
+            $isFixedLayout = true;
+            $rowLetters = range('A', 'J');
+            $maxCol = 48;
+            for($i=0; $i<5; $i++) $matrix[] = ['l'=>0, 'r'=>0];
+            array_push($matrix, ['l'=>2,'r'=>2], ['l'=>4,'r'=>4], ['l'=>6,'r'=>6], ['l'=>8,'r'=>8], ['l'=>10,'r'=>10]);
+        }
+        else if (in_array($name, ["SB", "SC", "SD", "SL", "SM", "SN"])) {
+            $isFixedLayout = true;
+            $rowLetters = range('A', 'H');
+            $maxCol = 20;
+            $matrix = [['l'=>0, 'r'=>0]];
+        }
+        else if (in_array($name, ["SE", "SK"])) {
+            $isFixedLayout = true;
+            $rowLetters = range('A', 'H');
+            $maxCol = 27;
+            $matrix = [['l'=>0,'r'=>6], ['l'=>0,'r'=>5], ['l'=>0,'r'=>4], ['l'=>0,'r'=>4], ['l'=>0,'r'=>3], ['l'=>0,'r'=>2], ['l'=>0,'r'=>1], ['l'=>0,'r'=>0]];
+        }
+        else if (in_array($name, ["SF", "SJ"])) {
+            $isFixedLayout = true;
+            $rowLetters = range('A', 'H');
+            $maxCol = 24;
+            $matrix = [['l'=>0,'r'=>8], ['l'=>0,'r'=>7], ['l'=>0,'r'=>6], ['l'=>0,'r'=>5], ['l'=>0,'r'=>3], ['l'=>0,'r'=>2], ['l'=>0,'r'=>1], ['l'=>0,'r'=>0]];
+        }
+        else if (in_array($name, ["SG", "SI"])) {
+            $isFixedLayout = true;
+            $rowLetters = range('A', 'H');
+            $maxCol = 20;
+            $matrix = [['l'=>0,'r'=>6], ['l'=>0,'r'=>5], ['l'=>0,'r'=>4], ['l'=>0,'r'=>3], ['l'=>0,'r'=>3], ['l'=>0,'r'=>2], ['l'=>0,'r'=>1], ['l'=>0,'r'=>0]];
+        }
+        else if ($name === "SH") {
+            $isFixedLayout = true;
+            $rowLetters = range('A', 'H');
+            $maxCol = 19;
+            $matrix = [['l'=>0, 'r'=>0]];
+        }
+        else if (in_array($name, ["B", "T"])) {
+            $isFixedLayout = true;
+            $rowLetters = range('A', 'R');
+            $maxCol = 10;
+            $isT = ($name === "T");
+            $matrix = [
+                ['l' => $isT ? 0 : 5, 'r' => $isT ? 5 : 0], ['l' => $isT ? 0 : 3, 'r' => $isT ? 3 : 0], ['l' => $isT ? 0 : 3, 'r' => $isT ? 3 : 0], ['l' => $isT ? 0 : 3, 'r' => $isT ? 3 : 0],
+                ['l' => $isT ? 0 : 3, 'r' => $isT ? 3 : 0], ['l' => $isT ? 0 : 3, 'r' => $isT ? 3 : 0], ['l' => $isT ? 0 : 4, 'r' => $isT ? 4 : 0], ['l' => $isT ? 0 : 5, 'r' => $isT ? 5 : 0],
+                ['l'=>0,'r'=>0], ['l'=>0,'r'=>0], ['l'=>0,'r'=>0], ['l'=>0,'r'=>0], ['l'=>0,'r'=>0], ['l'=>0,'r'=>0], ['l'=>0,'r'=>0], ['l'=>0,'r'=>0], ['l'=>0,'r'=>0], ['l'=>0,'r'=>0]
+            ];
+        }
+        else if (in_array($name, ["C", "D", "S", "R"])) {
+            $isFixedLayout = true;
+            $rowLetters = ["AA", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q"];
+            $maxCol = 20;
+            $matrix = [
+                ['l'=>4,'r'=>5], ['l'=>3,'r'=>4], ['l'=>3,'r'=>4], ['l'=>3,'r'=>4], ['l'=>3,'r'=>4], ['l'=>3,'r'=>4], ['l'=>4,'r'=>5], ['l'=>5,'r'=>5],
+                ['l'=>0,'r'=>0], ['l'=>0,'r'=>0], ['l'=>0,'r'=>0], ['l'=>0,'r'=>0], ['l'=>0,'r'=>0], ['l'=>0,'r'=>0], ['l'=>0,'r'=>0], ['l'=>0,'r'=>0], ['l'=>0,'r'=>0], ['l'=>0,'r'=>0]
+            ];
+        }
+        else if (in_array($name, ["E", "Q"])) {
+            $isFixedLayout = true;
+            $rowLetters = ["AA", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q"];
+            $maxCol = 23;
+            $matrix = [
+                ['l'=>5,'r'=>9], ['l'=>4,'r'=>7], ['l'=>4,'r'=>6], ['l'=>4,'r'=>6], ['l'=>4,'r'=>6], ['l'=>4,'r'=>5], ['l'=>5,'r'=>4], ['l'=>5,'r'=>5],
+                ['l'=>0,'r'=>5], ['l'=>0,'r'=>5], ['l'=>0,'r'=>5], ['l'=>0,'r'=>4], ['l'=>0,'r'=>3], ['l'=>0,'r'=>2], ['l'=>0,'r'=>1], ['l'=>0,'r'=>0], ['l'=>0,'r'=>0], ['l'=>0,'r'=>0]
+            ];
+        }
+        else if (in_array($name, ["F", "P"])) {
+            $isFixedLayout = true;
+            $rowLetters = range('A', 'U');
+            $maxCol = 19;
+            $isP = ($name === "P");
+            $matrix = [
+                ['l' => $isP ? 3 : 12, 'r' => $isP ? 12 : 3], ['l' => $isP ? 3 : 11, 'r' => $isP ? 11 : 3], ['l' => $isP ? 3 : 11, 'r' => $isP ? 11 : 3], ['l' => $isP ? 3 : 10, 'r' => $isP ? 10 : 3],
+                ['l' => $isP ? 3 : 10, 'r' => $isP ? 10 : 3], ['l' => $isP ? 3 : 9,  'r' => $isP ? 9 : 3],  ['l' => $isP ? 3 : 9,  'r' => $isP ? 9 : 3],  ['l' => $isP ? 0 : 5,  'r' => $isP ? 5 : 0],
+                ['l' => $isP ? 0 : 5,  'r' => $isP ? 5 : 0],  ['l' => $isP ? 0 : 4,  'r' => $isP ? 4 : 0],  ['l' => $isP ? 0 : 4,  'r' => $isP ? 4 : 0],  ['l' => $isP ? 0 : 4,  'r' => $isP ? 4 : 0],
+                ['l' => $isP ? 0 : 3,  'r' => $isP ? 3 : 0],  ['l' => $isP ? 0 : 2,  'r' => $isP ? 2 : 0],  ['l' => $isP ? 0 : 1,  'r' => $isP ? 1 : 0],  ['l' => $isP ? 0 : 1,  'r' => $isP ? 1 : 0],
+                ['l' => 0, 'r' => 0], ['l' => $isP ? 0 : 1,  'r' => $isP ? 1 : 0], ['l' => $isP ? 0 : 2,  'r' => $isP ? 2 : 0], ['l' => $isP ? 0 : 3,  'r' => $isP ? 3 : 0], ['l' => $isP ? 8 : 5,  'r' => $isP ? 5 : 8]
+            ];
+        }
+        else if (in_array($name, ["G", "O"])) {
+            $isFixedLayout = true;
+            $rowLetters = range('A', 'T');
+            $maxCol = 20;
+            $isO = ($name === "O");
+            $matrix = [
+                ['l' => $isO ? 0 : 17, 'r' => $isO ? 17 : 0], ['l' => $isO ? 0 : 16, 'r' => $isO ? 16 : 0], ['l' => $isO ? 0 : 16, 'r' => $isO ? 16 : 0], ['l' => $isO ? 0 : 15, 'r' => $isO ? 15 : 0],
+                ['l' => $isO ? 0 : 15, 'r' => $isO ? 15 : 0], ['l' => $isO ? 0 : 15, 'r' => $isO ? 15 : 0], ['l' => $isO ? 0 : 15, 'r' => $isO ? 15 : 0], ['l' => $isO ? 0 : 5,  'r' => $isO ? 5 : 0],
+                ['l' => $isO ? 0 : 5,  'r' => $isO ? 5 : 0],  ['l' => $isO ? 0 : 4,  'r' => $isO ? 4 : 0],  ['l' => $isO ? 0 : 4,  'r' => $isO ? 4 : 0],  ['l' => $isO ? 0 : 4,  'r' => $isO ? 4 : 0],
+                ['l' => $isO ? 0 : 3,  'r' => $isO ? 3 : 0],  ['l' => $isO ? 0 : 3,  'r' => $isO ? 3 : 0],  ['l' => $isO ? 0 : 2,  'r' => $isO ? 2 : 0],  ['l' => $isO ? 0 : 2,  'r' => $isO ? 2 : 0],
+                ['l' => $isO ? 0 : 1,  'r' => $isO ? 1 : 0],  ['l' => $isO ? 0 : 1,  'r' => $isO ? 1 : 0],  ['l' => $isO ? 0 : 1,  'r' => $isO ? 1 : 0],  ['l' => 0, 'r' => 0]
+            ];
+        }
+        else if (in_array($name, ["H", "N"])) {
+            $isFixedLayout = true;
+            $rowLetters = range('A', 'U');
+            $maxCol = 19;
+            $isN = ($name === "N");
+            $matrix = [
+                ['l' => $isN ? 16 : 0, 'r' => $isN ? 0 : 16], ['l' => $isN ? 15 : 0, 'r' => $isN ? 0 : 15], ['l' => $isN ? 15 : 0, 'r' => $isN ? 0 : 15], ['l' => $isN ? 14 : 0, 'r' => $isN ? 0 : 14],
+                ['l' => $isN ? 14 : 0, 'r' => $isN ? 0 : 14], ['l' => $isN ? 14 : 0, 'r' => $isN ? 0 : 14], ['l' => $isN ? 14 : 0, 'r' => $isN ? 0 : 14], ['l' => $isN ? 6 : 0,  'r' => $isN ? 0 : 6],
+                ['l' => $isN ? 6 : 0,  'r' => $isN ? 0 : 6],  ['l' => $isN ? 5 : 0,  'r' => $isN ? 0 : 5],  ['l' => $isN ? 5 : 0,  'r' => $isN ? 0 : 5],  ['l' => $isN ? 4 : 0,  'r' => $isN ? 0 : 4],
+                ['l' => $isN ? 3 : 0,  'r' => $isN ? 0 : 3],  ['l' => $isN ? 3 : 0,  'r' => $isN ? 0 : 3],  ['l' => $isN ? 2 : 0,  'r' => $isN ? 0 : 2],  ['l' => $isN ? 2 : 0,  'r' => $isN ? 0 : 2],
+                ['l' => $isN ? 1 : 0,  'r' => $isN ? 0 : 1],  ['l' => $isN ? 1 : 0,  'r' => $isN ? 0 : 1],  ['l' => $isN ? 1 : 0,  'r' => $isN ? 0 : 1],  ['l' => 0, 'r' => 0], ['l' => 0, 'r' => 0]
+            ];
+        }
+        else if (in_array($name, ["I", "M"])) {
+            $isFixedLayout = true;
+            $rowLetters = range('A', 'U');
+            $maxCol = 20;
+            $isM = ($name === "M");
+            $matrix = [
+                ['l' => $isM ? 0 : 17, 'r' => $isM ? 17 : 0], ['l' => $isM ? 0 : 16, 'r' => $isM ? 16 : 0], ['l' => $isM ? 0 : 16, 'r' => $isM ? 16 : 0], ['l' => $isM ? 0 : 15, 'r' => $isM ? 15 : 0],
+                ['l' => $isM ? 0 : 15, 'r' => $isM ? 15 : 0], ['l' => $isM ? 0 : 15, 'r' => $isM ? 15 : 0], ['l' => $isM ? 0 : 15, 'r' => $isM ? 15 : 0], ['l' => $isM ? 0 : 5,  'r' => $isM ? 5 : 0],
+                ['l' => $isM ? 0 : 5,  'r' => $isM ? 5 : 0],  ['l' => $isM ? 0 : 4,  'r' => $isM ? 4 : 0],  ['l' => $isM ? 0 : 4,  'r' => $isM ? 4 : 0],  ['l' => $isM ? 0 : 4,  'r' => $isM ? 4 : 0],
+                ['l' => $isM ? 0 : 3,  'r' => $isM ? 3 : 0],  ['l' => $isM ? 0 : 3,  'r' => $isM ? 3 : 0],  ['l' => $isM ? 0 : 2,  'r' => $isM ? 2 : 0],  ['l' => $isM ? 0 : 2,  'r' => $isM ? 2 : 0],
+                ['l' => $isM ? 0 : 1,  'r' => $isM ? 1 : 0],  ['l' => $isM ? 0 : 1,  'r' => $isM ? 1 : 0],  ['l' => $isM ? 0 : 1,  'r' => $isM ? 1 : 0],  ['l' => 0, 'r' => 0], ['l' => 0, 'r' => 0]
+            ];
+        }
+        else if (in_array($name, ["J", "L"])) {
+            $isFixedLayout = true;
+            $rowLetters = range('A', 'W');
+            $maxCol = 20;
+            $isL = ($name === "L");
+            $matrix = [
+                ['l' => $isL ? 17 : 0, 'r' => $isL ? 0 : 17], ['l' => $isL ? 17 : 0, 'r' => $isL ? 0 : 17], ['l' => $isL ? 16 : 0, 'r' => $isL ? 0 : 16], ['l' => $isL ? 16 : 0, 'r' => $isL ? 0 : 16],
+                ['l' => $isL ? 16 : 0, 'r' => $isL ? 0 : 16], ['l' => $isL ? 5 : 0,  'r' => $isL ? 0 : 5],  ['l' => $isL ? 5 : 0,  'r' => $isL ? 0 : 5],  ['l' => $isL ? 5 : 0,  'r' => $isL ? 0 : 5],
+                ['l' => $isL ? 4 : 0,  'r' => $isL ? 0 : 4],  ['l' => $isL ? 4 : 0,  'r' => $isL ? 0 : 4],  ['l' => $isL ? 3 : 0,  'r' => $isL ? 0 : 3],  ['l' => $isL ? 3 : 0,  'r' => $isL ? 0 : 3],
+                ['l' => $isL ? 2 : 0,  'r' => $isL ? 0 : 2],  ['l' => $isL ? 2 : 0,  'r' => $isL ? 0 : 2],  ['l' => $isL ? 1 : 0,  'r' => $isL ? 0 : 1],  ['l' => $isL ? 1 : 0,  'r' => $isL ? 0 : 1],
+                ['l' => $isL ? 1 : 0,  'r' => $isL ? 0 : 1],  ['l' => 0, 'r' => 0], ['l' => $isL ? 11 : 0, 'r' => $isL ? 0 : 11], ['l' => $isL ? 7 : 0,  'r' => $isL ? 0 : 7],
+                ['l' => $isL ? 7 : 0,  'r' => $isL ? 0 : 7],  ['l' => $isL ? 7 : 0,  'r' => $isL ? 0 : 7],  ['l' => $isL ? 6 : 0,  'r' => $isL ? 0 : 6]
+            ];
+        }
+        else if ($name === "K") {
+            $isFixedLayout = true;
+            $rowLetters = ["AA", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q"];
+            $maxCol = 14;
+            $matrix = [
+                ['l'=>2, 'r'=>2], ['l'=>1, 'r'=>1], ['l'=>1, 'r'=>1], ['l'=>1, 'r'=>1], ['l'=>1, 'r'=>1], ['l'=>1, 'r'=>1], ['l'=>1, 'r'=>1], ['l'=>1, 'r'=>1],
+                ['l'=>1, 'r'=>1], ['l'=>1, 'r'=>1], ['l'=>1, 'r'=>1], ['l'=>1, 'r'=>1], ['l'=>1, 'r'=>1], ['l'=>1, 'r'=>1], ['l'=>1, 'r'=>1], ['l'=>1, 'r'=>1],
+                ['l'=>1, 'r'=>1], ['l'=>0, 'r'=>0]
+            ];
+        }
+
+        // ============================================
+        // 🎯 ศาลาดนตรีสุริยเทพ ม.รังสิต (RANGSIT HALL)
+        // ============================================
+        else if (in_array($name, ["ZONE 1", "ZONE1"])) {
+            $isFixedLayout = true;
+            $rowLetters = ["C", "D", "E", "F", "G", "H", "I", "J", "K", "L"];
+            $maxCol = 20;
+            $matrix = [
+                ['l'=>2, 'r'=>6, 'gapAfter'=>8], ['l'=>1, 'r'=>6, 'gapAfter'=>9], ['l'=>2, 'r'=>6, 'gapAfter'=>8],
+                ['l'=>3, 'r'=>5, 'gapAfter'=>8], ['l'=>4, 'r'=>4, 'gapAfter'=>7], ['l'=>5, 'r'=>2, 'gapAfter'=>6],
+                ['l'=>5, 'r'=>2, 'gapAfter'=>6], ['l'=>12, 'r'=>1, 'gapAfter'=>0], ['l'=>5, 'r'=>3], ['l'=>5, 'r'=>3]
+            ];
+        }
+        else if (in_array($name, ["ZONE 2", "ZONE2"])) {
+            $isFixedLayout = true;
+            $rowLetters = ["C", "D", "E", "F", "G", "H", "I", "J", "K", "L"];
+            $maxCol = 22;
+            $matrix = [
+                ['l'=>6, 'r'=>2, 'start'=>12], ['l'=>6, 'r'=>1, 'start'=>13], ['l'=>6, 'r'=>2, 'start'=>12],
+                ['l'=>5, 'r'=>2, 'start'=>12], ['l'=>5, 'r'=>1, 'start'=>12], ['l'=>5, 'r'=>2, 'start'=>12],
+                ['l'=>6, 'r'=>2, 'start'=>13], ['l'=>1, 'r'=>6, 'start'=>8],  ['l'=>6, 'r'=>0, 'start'=>13], ['l'=>6, 'r'=>1, 'start'=>13]
+            ];
+        }
+        else if (in_array($name, ["ZONE 3", "ZONE3"])) {
+            $isFixedLayout = true;
+            $rowLetters = ["C", "D", "E", "F", "G", "H", "I", "J", "K", "L"];
+            $maxCol = 20;
+            $matrix = [
+                ['l'=>5, 'r'=>3, 'gapAfter'=>3, 'start'=>26], ['l'=>5, 'r'=>2, 'gapAfter'=>3, 'start'=>28], ['l'=>5, 'r'=>3, 'gapAfter'=>3, 'start'=>26],
+                ['l'=>4, 'r'=>3, 'gapAfter'=>4, 'start'=>27], ['l'=>4, 'r'=>4, 'gapAfter'=>4, 'start'=>28], ['l'=>3, 'r'=>5, 'gapAfter'=>5, 'start'=>27],
+                ['l'=>2, 'r'=>5, 'gapAfter'=>6, 'start'=>27], ['l'=>1, 'r'=>11, 'gapAfter'=>7, 'start'=>23], ['l'=>2, 'r'=>6, 'start'=>29], ['l'=>3, 'r'=>5, 'start'=>28]
+            ];
+        }
+        else if (in_array($name, ["ZONE 4", "ZONE4"])) {
+            $isFixedLayout = true;
+            $rowLetters = ["M", "N", "O", "P", "Q", "R", "S", "T", "U", "V"];
+            $maxCol = 16;
+            $matrix = [
+                ['l'=>3, 'r'=>2], ['l'=>2, 'r'=>3], ['l'=>2, 'r'=>2], ['l'=>2, 'r'=>2],
+                ['l'=>2, 'r'=>2], ['l'=>3, 'r'=>2], ['l'=>4, 'r'=>1], ['l'=>4, 'r'=>1],
+                ['l'=>4, 'r'=>1], ['l'=>4, 'r'=>1]
+            ];
+        }
+        else if (in_array($name, ["ZONE 5", "ZONE5"])) {
+            $isFixedLayout = true;
+            $rowLetters = ["M", "N", "O", "P", "Q", "R", "S", "T"];
+            $maxCol = 20;
+            $matrix = [
+                ['l'=>3, 'r'=>3, 'start'=>12], ['l'=>2, 'r'=>3, 'start'=>12], ['l'=>3, 'r'=>1, 'start'=>13],
+                ['l'=>3, 'r'=>2, 'start'=>13], ['l'=>3, 'r'=>1, 'start'=>13], ['l'=>2, 'r'=>3, 'start'=>12],
+                ['l'=>3, 'r'=>1, 'start'=>12], ['l'=>2, 'r'=>3, 'start'=>12]
+            ];
+        }
+        else if (in_array($name, ["ZONE 6", "ZONE6"])) {
+            $isFixedLayout = true;
+            $rowLetters = ["M", "N", "O", "P", "Q", "R", "S", "T", "U", "V"];
+            $maxCol = 16;
+            $matrix = [
+                ['l'=>2, 'r'=>3, 'start'=>26], ['l'=>3, 'r'=>2, 'start'=>27], ['l'=>2, 'r'=>2, 'start'=>29],
+                ['l'=>2, 'r'=>2, 'start'=>28], ['l'=>2, 'r'=>2, 'start'=>29], ['l'=>3, 'r'=>2, 'start'=>27],
+                ['l'=>2, 'r'=>3, 'start'=>28], ['l'=>3, 'r'=>2, 'start'=>27], ['l'=>2, 'r'=>3, 'start'=>26], ['l'=>3, 'r'=>2, 'start'=>27]
+            ];
+        }
+        else if (in_array($name, ["ZONE 7", "ZONE7"])) {
+            $isFixedLayout = true;
+            $rowLetters = ["AA", "BB", "CC", "DD", "EE", "FF", "GG", "HH"];
+            $maxCol = 11;
+            $matrix = array_fill(0, 8, ['l'=>0, 'r'=>0]);
+        }
+        else if (in_array($name, ["ZONE 8", "ZONE8"])) {
+            $isFixedLayout = true;
+            $rowLetters = ["AA", "BB", "CC", "DD", "EE", "FF", "GG", "HH"];
+            $maxCol = 16;
+            $matrix = [
+                ['l'=>0, 'r'=>0, 'start'=>12], ['l'=>1, 'r'=>0, 'start'=>12],
+                ['l'=>0, 'r'=>0, 'start'=>12], ['l'=>1, 'r'=>0, 'start'=>12],
+                ['l'=>0, 'r'=>0, 'start'=>12], ['l'=>1, 'r'=>0, 'start'=>12],
+                ['l'=>0, 'r'=>0, 'start'=>12], ['l'=>1, 'r'=>0, 'start'=>12]
+            ];
+        }
+        else if (in_array($name, ["ZONE 9", "ZONE9"])) {
+            $isFixedLayout = true;
+            $rowLetters = ["AA", "BB", "CC", "DD", "EE", "FF", "GG", "HH"];
+            $maxCol = 11;
+            $matrix = [
+                ['l'=>0, 'r'=>0, 'start'=>28], ['l'=>0, 'r'=>0, 'start'=>27], ['l'=>0, 'r'=>0, 'start'=>28], ['l'=>0, 'r'=>0, 'start'=>27],
+                ['l'=>0, 'r'=>0, 'start'=>28], ['l'=>0, 'r'=>0, 'start'=>27], ['l'=>0, 'r'=>0, 'start'=>28], ['l'=>0, 'r'=>0, 'start'=>27]
+            ];
+        }
+        
+        // ถ้าไม่ตรงกับโซนใดๆ ด้านบน ให้ส่ง null เพื่อไปสร้างเป็นรูปทรงสี่เหลี่ยมธรรมดา
+        if (!$isFixedLayout) {
+            return null;
+        }
+
+        $seats = [];
+        
+        // จำลองการไล่ลูปและคำนวณเบอร์เก้าอี้แบบเดียวกับหน้า React เด๊ะๆ
+        for ($rowIndex = 0; $rowIndex < count($rowLetters); $rowIndex++) {
+            $baseLetter = $rowLetters[$rowIndex % count($rowLetters)];
+            $cycle = floor($rowIndex / count($rowLetters));
+            $rowLetter = $cycle > 0 ? $baseLetter . ($cycle + 1) : $baseLetter;
+
+            $conf = $matrix[$rowIndex] ?? (count($matrix) > 0 ? end($matrix) : ['l'=>0, 'r'=>0]);
+            
+            $gapCount = isset($conf['gapAfter']) ? 1 : 0;
+            $lBlanks = $conf['l'] ?? 0;
+            $rBlanks = $conf['r'] ?? 0;
+            
+            $maxReal = $maxCol - $lBlanks - $rBlanks - $gapCount;
+            $realToPlace = $maxReal;
+
+            for ($i = 0; $i < $realToPlace; $i++) {
+                $cleanName = trim($name);
+                
+                // ตรวจสอบทิศทางการนับเลขเหมือนหน้าบ้าน
+                $isRightSideZone = in_array($cleanName, ["SK", "SL", "SM", "SN", "SJ", "SI", "J", "L", "K", "M", "N", "O", "P", "Q", "R", "S", "T"]);
+                $isRangsitZone = strpos($cleanName, "ZONE") !== false;
+
+                if ($isRightSideZone) {
+                    // ฝั่งขวานับถอยหลัง
+                    $seatNum = $realToPlace - $i;
+                } else if ($isRangsitZone && isset($conf['start'])) {
+                    // โซนรังสิตที่ระบุเลขเริ่ม
+                    $seatNum = $conf['start'] + $i;
+                } else {
+                    // โซนทั่วไป
+                    $seatNum = $startNum + $lBlanks + $i;
+                }
+
+                $seats[] = [
+                    'row' => $rowLetter,
+                    'num' => str_pad($seatNum, 2, '0', STR_PAD_LEFT) // เติม 0 นำหน้าให้เป็น 2 หลัก เช่น 01, 02
+                ];
+            }
+        }
+
+        return $seats;
     }
 
     /**
